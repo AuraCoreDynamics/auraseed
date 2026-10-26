@@ -46,12 +46,16 @@ class SeedManifest:
     """
     Manifest recording the selection lineage, default status, and host alternatives.
     """
-    seed_version: str
-    created_at: str
-    selected_interpreter: SelectedInterpreterContext
-    known_host_alternatives: List[HostAlternativeContext]
-    is_default_selection: bool
-    isolation_status: IsolationStatus
+    seed_version: str = "1.0.0"
+    created_at: str = ""
+    selected_interpreter: Optional[SelectedInterpreterContext] = None
+    known_host_alternatives: List[HostAlternativeContext] = dataclasses.field(default_factory=list)
+    is_default_selection: bool = True
+    isolation_status: Optional[IsolationStatus] = None
+    target_env_id: Optional[str] = None
+    version: Optional[str] = None
+    source_type: Optional[str] = None
+    is_default: Optional[bool] = None
 
 @dataclasses.dataclass
 class VersionAuditReport:
