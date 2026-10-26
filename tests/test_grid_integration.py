@@ -8,7 +8,6 @@ from pathlib import Path
 
 from auraseed.grid.detector import detect_grid
 from auraseed.grid.peer_transfer import P2PVenvClient
-from auraseed.mcp.server import AuraSeedMcpServer
 from auraseed.mvenv.manager import MvenvManager
 from auraseed.mvenv.models import MvenvCreateRequest
 from auraseed.api.server import create_api_server
@@ -39,46 +38,8 @@ class TestGridIntegration(unittest.TestCase):
             else:
                 os.environ.pop("AURAGRID_MANAGEMENT_PORT", None)
 
-    def test_mcp_server_protocol(self):
-        temp_dir = tempfile.mkdtemp(prefix="auraseed_mcp_test_")
-        try:
-            mgr = MvenvManager(Path(temp_dir))
-            mcp = AuraSeedMcpServer(mgr)
-
-            # 1. Initialize
-            init_resp = mcp.handle_request({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": {}
-            })
-            self.assertEqual(init_resp["result"]["serverInfo"]["name"], "auraseed-mcp")
-
-            # 2. List tools
-            tools_resp = mcp.handle_request({
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "tools/list",
-                "params": {}
-            })
-            tool_names = [t["name"] for t in tools_resp["result"]["tools"]]
-            self.assertIn("mvenv_list", tool_names)
-            self.assertIn("mvenv_create", tool_names)
-            self.assertIn("mvenv_verify", tool_names)
-
-            # 3. Call tool: mvenv_list
-            call_resp = mcp.handle_request({
-                "jsonrpc": "2.0",
-                "id": 3,
-                "method": "tools/call",
-                "params": {"name": "mvenv_list", "arguments": {}}
-            })
-            self.assertFalse(call_resp["result"].get("isError", False))
-            self.assertIn("content", call_resp["result"])
-        finally:
-            shutil.rmtree(temp_dir, ignore_errors=True)
-
     def test_p2p_bundle_transfer(self):
+
         # Set up peer node with an mvenv
         peer_dir = tempfile.mkdtemp(prefix="auraseed_peer_node_")
         local_dir = tempfile.mkdtemp(prefix="auraseed_local_node_")

@@ -22,9 +22,9 @@ from auraseed.models import SeedManifest
 from auraseed.mvenv.manager import MvenvManager
 from auraseed.mvenv.models import MvenvCreateRequest
 from auraseed.api.server import run_api_server
-from auraseed.mcp.server import AuraSeedMcpServer
 from auraseed.grid.mas_runner import run_as_mas
 from auraseed.grid.peer_transfer import P2PVenvClient
+
 
 
 def register_platform_strategies(manager: DiscoveryManager, adapter: str):

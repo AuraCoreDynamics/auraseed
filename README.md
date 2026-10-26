@@ -31,8 +31,9 @@ You do not need to install AuraSeed via pip. Simply clone the repository and inv
 - **Zero Dependencies**: Relies entirely on the Python standard library.
 - **First-Class MVenvs**: Full lifecycle cataloging, verification, and management of Managed Virtual Environments (`mvenvs`).
 - **Sovereign Isolation**: Creates virtual environments that sever dynamic dependencies on the host runtime. If the host Python is uninstalled, your AuraSeed environment survives.
-- **HTTP/REST API & MCP Server**: Exposes a zero-dependency REST service and Model Context Protocol (MCP) tool server for IDEs, coding agents, and cluster orchestrators.
+- **HTTP/REST API & Mesh Integration**: Exposes a zero-dependency REST service for IDEs, coding agents, and cluster orchestrators. When hosted on AuraGrid, it is automatically projected as Model Context Protocol (MCP) tools out of the box.
 - **P2P Environment Transfer**: Enables heterogeneous cluster nodes without local compilers to pull pre-compiled, sovereign mvenv bundles from peers.
+
 - **AuraGrid MAS Integration**: Detects active grid contexts and acts as an autonomous Managed Application Service under AuraGrid's `MasOrchestrator`.
 - **Cross-Platform Registry**: Automatically registers seeded environments in user-space (e.g., PEP 514 on Windows) for instant IDE discovery.
 - **Thick-Client Adapters**: Built-in logic to discover embedded Python runtimes inside applications like ArcGIS Pro and QGIS.
