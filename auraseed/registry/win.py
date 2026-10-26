@@ -20,3 +20,24 @@ class WindowsRegistryAdapter(BaseOSRegistryAdapter):
             winreg.CloseKey(env_key)
         except OSError:
             pass
+
+    def unregister_environment(self, env_name: str) -> None:
+        try:
+            key_path = rf"Software\Python\PythonCore\AuraSeed\Environments\{env_name}"
+            try:
+                winreg.DeleteKey(winreg.HKEY_CURRENT_USER, key_path + r"\InstallPath")
+            except OSError:
+                pass
+            try:
+                winreg.DeleteKey(winreg.HKEY_CURRENT_USER, key_path)
+            except OSError:
+                pass
+
+            try:
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_ALL_ACCESS) as env_key:
+                    winreg.DeleteValue(env_key, f"AURASEED_ENV_{env_name.upper()}")
+            except OSError:
+                pass
+        except OSError:
+            pass
+

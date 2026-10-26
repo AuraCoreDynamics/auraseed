@@ -24,4 +24,6 @@ if [ -z "$FOUND_PYTHON" ]; then
 fi
 
 # Execute the auraseed module
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+export PYTHONPATH="$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}"
 exec "$FOUND_PYTHON" -m auraseed "$@"

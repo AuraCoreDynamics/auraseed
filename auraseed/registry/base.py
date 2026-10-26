@@ -10,3 +10,11 @@ class BaseOSRegistryAdapter(abc.ABC):
         Registers the seeded environment natively in the host OS.
         """
         pass
+
+    @abc.abstractmethod
+    def unregister_environment(self, env_name: str) -> None:
+        """
+        Unregisters the seeded environment from the host OS.
+        """
+        pass
+

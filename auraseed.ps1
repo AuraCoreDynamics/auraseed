@@ -39,6 +39,13 @@ if (-not $FoundPython) {
     exit 1
 }
 
+# Ensure the auraseed repository root is on PYTHONPATH
+if ($env:PYTHONPATH) {
+    $env:PYTHONPATH = "$PSScriptRoot;$env:PYTHONPATH"
+} else {
+    $env:PYTHONPATH = "$PSScriptRoot"
+}
+
 # Execute the auraseed module
 & $FoundPython -m auraseed $args
 exit $LASTEXITCODE

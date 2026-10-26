@@ -22,6 +22,7 @@ echo [AuraSeed Bootstrapper] Error: Could not locate a base Python executable to
 exit /b 1
 
 :RunAuraSeed
+set "PYTHONPATH=%~dp0;%PYTHONPATH%"
 :: Execute the auraseed module
 "%FOUND_PYTHON%" -m auraseed %*
 exit /b %ERRORLEVEL%

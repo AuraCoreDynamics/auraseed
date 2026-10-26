@@ -6,3 +6,7 @@ class MacOSRegistryAdapter(BaseOSRegistryAdapter):
     """
     def register_environment(self, env_name: str, env_path: str) -> None:
         pass
+
+    def unregister_environment(self, env_name: str) -> None:
+        pass
+
