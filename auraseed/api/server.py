@@ -235,14 +235,52 @@ class AuraSeedApiHandler(BaseHTTPRequestHandler):
             super().log_message(format, *args)
 
 
-def create_api_server(host: str = "127.0.0.1", port: int = 7099, manager: Optional[MvenvManager] = None) -> ThreadedHTTPServer:
+try:
+    from auragrid import auragrid_service, auragrid_method
+except ImportError:
+    def auragrid_service(name: str = "", description: str = ""):
+        def deco(cls):
+            cls._service_name = name
+            cls._service_description = description
+            return cls
+        return deco
+
+    def auragrid_method(name: str = ""):
+        def deco(fn):
+            fn._method_name = name
+            return fn
+        return deco
+
+
+@auragrid_service(name="AuraSeed", description="Managed virtual environment (mvenv) creation, isolation, and pruning")
+class AuraSeedMasService:
+    """AuraGrid MAS for managing virtual environments natively without standalone HTTP server."""
+
+    def __init__(self, manager: Optional[MvenvManager] = None) -> None:
+        self.manager = manager or MvenvManager()
+
+    @auragrid_method(name="ListMenvs")
+    def list_mvenvs(self) -> dict:
+        return {"mvenvs": self.manager.list_all(), "count": len(self.manager.list_all())}
+
+    @auragrid_method(name="GetHealth")
+    def get_health(self) -> dict:
+        return {"status": "Healthy", "service": "AuraSeed", "root_path": str(self.manager.root_path)}
+
+    @auragrid_method(name="PruneStale")
+    def prune_stale(self, hours: float = 24.0) -> dict:
+        pruned = self.manager.prune_stale(hours)
+        return {"pruned": pruned, "count": len(pruned)}
+
+
+def create_api_server(host: str = "0.0.0.0", port: int = 7099, manager: Optional[MvenvManager] = None) -> ThreadedHTTPServer:
     m = manager or MvenvManager()
     server = ThreadedHTTPServer((host, port), AuraSeedApiHandler)
     server.mvenv_manager = m  # type: ignore
     return server
 
 
-def run_api_server(host: str = "127.0.0.1", port: int = 7099, manager: Optional[MvenvManager] = None):
+def run_api_server(host: str = "0.0.0.0", port: int = 7099, manager: Optional[MvenvManager] = None):
     server = create_api_server(host, port, manager)
     print(f"[AuraSeed API] Listening on http://{host}:{port}/")
     print(f"[AuraSeed API] Mvenv root: {server.mvenv_manager.root_path}")
