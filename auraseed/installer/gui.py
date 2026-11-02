@@ -4,6 +4,7 @@ Zero external runtime dependencies (Python standard library only).
 """
 import sys
 import os
+import platform
 import threading
 import webbrowser
 import subprocess
@@ -222,7 +223,10 @@ class AppInstallerGUI:
         sh = launchers.get("sh")
         target_launcher = bat if platform.system().lower() == "windows" else sh
         if target_launcher and Path(target_launcher).exists():
-            subprocess.Popen([str(target_launcher)], shell=True)
+            if platform.system().lower() == "windows":
+                subprocess.Popen(f'start "" "{target_launcher}"', shell=True)
+            else:
+                subprocess.Popen([str(target_launcher)], shell=True)
 
         self.root.destroy()
 
