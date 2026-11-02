@@ -283,6 +283,8 @@ def handle_p2p_cli(args: List[str]) -> int:
 
 
 def main() -> int:
+    from auraseed.provision.config_manager import apply_user_configs
+    apply_user_configs()
     if len(sys.argv) > 1:
         cmd = sys.argv[1].lower()
         if cmd == "mvenv":

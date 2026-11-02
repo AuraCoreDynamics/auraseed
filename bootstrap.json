@@ -1,0 +1,70 @@
+{
+  "default_distribution": "miniconda",
+  "target_dir": ".bootstrapped_python",
+  "fallback_target_dirs": {
+    "windows": "%LOCALAPPDATA%\\AuraSeed\\base_python",
+    "linux": "~/.local/share/auraseed/base_python",
+    "darwin": "~/Library/Application Support/auraseed/base_python"
+  },
+  "distributions": {
+    "miniconda": {
+      "windows-x86_64": {
+        "url": "https://repo.anaconda.com/miniconda/Miniconda3-latest-Windows-x86_64.exe",
+        "type": "exe",
+        "silent_args": [
+          "/InstallationType=JustMe",
+          "/AddToPath=0",
+          "/RegisterPython=0",
+          "/S",
+          "/D={INSTALL_DIR}"
+        ],
+        "python_subpath": "python.exe"
+      },
+      "linux-x86_64": {
+        "url": "https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh",
+        "type": "sh",
+        "silent_args": [
+          "-b",
+          "-p",
+          "{INSTALL_DIR}"
+        ],
+        "python_subpath": "bin/python"
+      },
+      "darwin-arm64": {
+        "url": "https://repo.anaconda.com/miniconda/Miniconda3-latest-MacOSX-arm64.sh",
+        "type": "sh",
+        "silent_args": [
+          "-b",
+          "-p",
+          "{INSTALL_DIR}"
+        ],
+        "python_subpath": "bin/python"
+      },
+      "darwin-x86_64": {
+        "url": "https://repo.anaconda.com/miniconda/Miniconda3-latest-MacOSX-x86_64.sh",
+        "type": "sh",
+        "silent_args": [
+          "-b",
+          "-p",
+          "{INSTALL_DIR}"
+        ],
+        "python_subpath": "bin/python"
+      }
+    }
+  },
+  "pip": {
+    "index_url": "",
+    "extra_index_urls": [],
+    "trusted_hosts": [],
+    "proxy": ""
+  },
+  "conda": {
+    "channels": [],
+    "default_channels": [],
+    "proxy_servers": {
+      "http": "",
+      "https": ""
+    },
+    "ssl_verify": true
+  }
+}
