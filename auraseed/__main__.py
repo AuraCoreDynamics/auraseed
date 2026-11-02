@@ -282,11 +282,34 @@ def handle_p2p_cli(args: List[str]) -> int:
     return 1
 
 
+def handle_package_cli(args: List[str]) -> int:
+    parser = argparse.ArgumentParser(prog="auraseed package-app", description="Package an application into a standalone installer bundle.")
+    parser.add_argument("app_dir", nargs="?", default=".", help="Path to application source directory (containing app.json)")
+    parser.add_argument("--out", "-o", default="./dist", help="Output directory for the bundle (default: ./dist)")
+    parser.add_argument("--zip", action="store_true", help="Compress the bundle into a .zip archive")
+    parsed = parser.parse_args(args)
+
+    from auraseed.installer.packager import AppBundlePackager
+    try:
+        packager = AppBundlePackager(Path(parsed.app_dir))
+        out_target = packager.package(Path(parsed.out), create_zip=parsed.zip)
+        print(f"[AuraSeed Packager] Successfully created installer bundle at: {out_target}")
+        return 0
+    except Exception as e:
+        print(f"[AuraSeed Packager] Error: {e}", file=sys.stderr)
+        return 1
+
+
 def main() -> int:
     from auraseed.provision.config_manager import apply_user_configs
     apply_user_configs()
     if len(sys.argv) > 1:
         cmd = sys.argv[1].lower()
+        if cmd in ("install-app", "install"):
+            from auraseed.installer.cli import run_installer_cli
+            return run_installer_cli(sys.argv[2:])
+        if cmd in ("package-app", "bundle-app", "package"):
+            return handle_package_cli(sys.argv[2:])
         if cmd == "mvenv":
             return handle_mvenv_cli(sys.argv[2:])
         if cmd == "serve":

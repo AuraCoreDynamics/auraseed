@@ -51,6 +51,8 @@ class WindowsDiscoverer(BaseDiscoverer):
                                     bin_dirs = [Path(install_path)]
                                     if (Path(install_path) / "DLLs").exists():
                                         bin_dirs.append(Path(install_path) / "DLLs")
+                                    if (Path(install_path) / "Library" / "bin").exists():
+                                        bin_dirs.append(Path(install_path) / "Library" / "bin")
                                     yield DiscoveredEnvironment(
                                         id=str(executable.resolve()),
                                         name=f"Python {version_key_name} (Registry)",
@@ -138,6 +140,8 @@ class WindowsDiscoverer(BaseDiscoverer):
                         bin_dirs = [exe.parent]
                         if (exe.parent / "DLLs").exists():
                             bin_dirs.append(exe.parent / "DLLs")
+                        if (exe.parent / "Library" / "bin").exists():
+                            bin_dirs.append(exe.parent / "Library" / "bin")
 
                         yield DiscoveredEnvironment(
                             id=str(exe.resolve()),

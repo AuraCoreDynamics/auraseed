@@ -60,6 +60,17 @@ class HostIsolationEngine:
                         else:
                             shutil.copy2(item, dst_item)
 
+            # Copy Conda Library/bin DLLs (critical for OpenSSL, ctypes, etc.)
+            conda_bin = src_dir / "Library" / "bin"
+            if conda_bin.exists() and conda_bin.is_dir():
+                for dll in conda_bin.glob("*.dll"):
+                    dst_dll = base_dir / dll.name
+                    if not dst_dll.exists():
+                        try:
+                            shutil.copy2(dll, dst_dll)
+                        except Exception:
+                            pass
+
             # Copy standard library zip files (e.g. python312.zip)
             for zip_file in src_dir.glob("python*.zip"):
                 dst_zip = base_dir / zip_file.name
@@ -164,6 +175,9 @@ class HostIsolationEngine:
         bin_dir.mkdir(parents=True, exist_ok=True)
 
         source_bin_dirs = []
+        conda_bin = target_env.executable.parent / "Library" / "bin"
+        if conda_bin.exists() and conda_bin.is_dir():
+            source_bin_dirs.append(conda_bin)
         for bd in target_env.metadata.get("bin_dirs", []):
             p = Path(bd)
             if p.exists() and p.is_dir():

@@ -106,13 +106,23 @@ class MvenvManager:
         # Fallback to current running Python
         cur_exe = Path(sys.executable).resolve()
         ver_str = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+        bin_dirs = [cur_exe.parent]
+        if (cur_exe.parent / "DLLs").exists():
+            bin_dirs.append(cur_exe.parent / "DLLs")
+        if (cur_exe.parent / "Library" / "bin").exists():
+            bin_dirs.append(cur_exe.parent / "Library" / "bin")
+
         return DiscoveredEnvironment(
             id="current_python",
             name="Current Python",
             executable=cur_exe,
             version=ver_str,
             source_type="system_fallback",
-            site_packages=[]
+            site_packages=[],
+            metadata={
+                "parent_bin_dir": str(cur_exe.parent),
+                "bin_dirs": [str(b) for b in bin_dirs]
+            }
         )
 
     def create_venv(self, req: MvenvCreateRequest) -> MvenvRecord:
