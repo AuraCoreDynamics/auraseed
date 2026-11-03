@@ -103,6 +103,12 @@ class AppInstallerEngine:
 
         update_progress(35, f"Virtual environment verified with Python at: {python_exe}")
 
+        bundle_dir = Path(self.manifest.metadata.get("_manifest_dir", app_root)).resolve()
+
+        # 3.5 Execute pre-install hook if defined
+        update_progress(38, "Checking pre-install lifecycle hooks...")
+        self._execute_python_hook("pre_install", python_exe, target_dest, target_port, app_root, bundle_dir)
+
         # 4. Install main application
         update_progress(40, f"Installing {self.manifest.display_name}...")
         is_windows = platform.system().lower() == "windows"
@@ -140,15 +146,19 @@ class AppInstallerEngine:
             if sub_res.returncode != 0:
                 self.log(f"Warning: Subproject {sub_path.name} install warning: {sub_res.stderr or sub_res.stdout}")
 
-        # 6. Execute post-install commands
+        # 6. Execute post-install hooks & commands
+        update_progress(82, "Executing post-install lifecycle hooks...")
+        self._execute_python_hook("post_install", python_exe, target_dest, target_port, app_root, bundle_dir)
+
         if self.manifest.post_install_commands:
-            update_progress(85, "Executing post-install hooks...")
+            update_progress(87, "Executing post-install shell commands...")
             for post_cmd in self.manifest.post_install_commands:
                 formatted_cmd = post_cmd.format(
                     port=target_port,
                     python=str(python_exe),
                     dest=str(target_dest),
-                    app_root=str(app_root)
+                    app_root=str(app_root),
+                    bundle_dir=str(bundle_dir)
                 )
                 self.log(f"Running post-install: {formatted_cmd}")
                 subprocess.run(formatted_cmd, shell=True, env=env_vars, capture_output=True)
@@ -254,4 +264,90 @@ class AppInstallerEngine:
             self.log(f"Created Desktop shortcut: {shortcut_path}")
         except Exception as e:
             self.log(f"Could not create desktop shortcut: {e}")
+
+    def _execute_python_hook(
+        self,
+        hook_name: str,
+        python_exe: Path,
+        target_dest: Path,
+        target_port: int,
+        app_root: Path,
+        bundle_dir: Path
+    ) -> None:
+        """
+        Executes a Python lifecycle hook script with injected installation context.
+        """
+        hook_target = None
+        # Check explicit definition in manifest
+        if self.manifest.hooks and hook_name in self.manifest.hooks:
+            cand = Path(self.manifest.hooks[hook_name])
+            if cand.is_absolute() and cand.exists():
+                hook_target = cand
+            elif (bundle_dir / cand).exists():
+                hook_target = bundle_dir / cand
+            elif (app_root / cand).exists():
+                hook_target = app_root / cand
+            elif (bundle_dir / "hooks" / cand.name).exists():
+                hook_target = bundle_dir / "hooks" / cand.name
+            else:
+                self.log(f"Warning: Defined hook '{hook_name}' not found at: {cand}")
+                return
+        else:
+            # Check standard fallback locations
+            candidates = [
+                bundle_dir / "hooks" / f"{hook_name}.py",
+                app_root / "hooks" / f"{hook_name}.py",
+                bundle_dir / f"{hook_name}.py",
+                app_root / f"{hook_name}.py",
+            ]
+            for cand in candidates:
+                if cand.exists():
+                    hook_target = cand
+                    break
+
+        if not hook_target:
+            return
+
+        self.log(f"Executing lifecycle hook '{hook_name}' from: {hook_target}")
+        env_vars = os.environ.copy()
+        bin_dir = python_exe.parent
+        env_vars["PATH"] = f"{bin_dir}{os.pathsep}{env_vars.get('PATH', '')}"
+        env_vars["AURASEED_APP_NAME"] = self.manifest.name
+        env_vars["AURASEED_DISPLAY_NAME"] = self.manifest.display_name
+        env_vars["AURASEED_VERSION"] = self.manifest.version
+        env_vars["AURASEED_INSTALL_DIR"] = str(target_dest)
+        env_vars["AURASEED_APP_ROOT"] = str(app_root)
+        env_vars["AURASEED_BUNDLE_DIR"] = str(bundle_dir)
+        env_vars["AURASEED_ARTIFACTS_DIR"] = str(bundle_dir / "artifacts")
+        env_vars["AURASEED_PYTHON"] = str(python_exe)
+        env_vars["AURASEED_PORT"] = str(target_port)
+        env_vars["AURASEED_HOOK"] = hook_name
+
+        cmd = [
+            str(python_exe),
+            str(hook_target),
+            "--install-dir", str(target_dest),
+            "--bundle-dir", str(bundle_dir),
+            "--port", str(target_port),
+            "--hook", hook_name,
+        ]
+
+        proc = subprocess.Popen(
+            cmd,
+            env=env_vars,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            cwd=str(bundle_dir)
+        )
+        if proc.stdout:
+            for line in proc.stdout:
+                clean_line = line.rstrip()
+                if clean_line:
+                    self.log(f"[{hook_name}] {clean_line}")
+            proc.stdout.close()
+        proc.wait()
+        if proc.returncode != 0:
+            raise RuntimeError(f"Lifecycle hook '{hook_name}' failed with returncode {proc.returncode}")
+
 

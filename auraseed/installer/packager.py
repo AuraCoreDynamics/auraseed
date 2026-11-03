@@ -49,7 +49,38 @@ class AppBundlePackager:
         if bootstrap_json.exists():
             shutil.copy2(bootstrap_json, bundle_dir / "bootstrap.json")
 
-        # 4. Generate app.json in bundle root pointing source_path to payload
+        # 4. Copy and bundle extra artifacts and resources
+        artifacts_dst = bundle_dir / "artifacts"
+        app_artifacts_dir = self.app_dir / "artifacts"
+        if app_artifacts_dir.exists() and app_artifacts_dir.is_dir():
+            artifacts_dst.mkdir(parents=True, exist_ok=True)
+            self._copy_tree_clean(app_artifacts_dir, artifacts_dst)
+
+        if self.manifest.artifacts:
+            artifacts_dst.mkdir(parents=True, exist_ok=True)
+            for art_pattern in self.manifest.artifacts:
+                matched_paths = list(self.app_dir.glob(art_pattern)) if ("*" in art_pattern or "?" in art_pattern) else [self.app_dir / art_pattern]
+                for p in matched_paths:
+                    if p.exists():
+                        try:
+                            rel_p = p.relative_to(self.app_dir)
+                            dst_file = artifacts_dst / rel_p
+                        except ValueError:
+                            dst_file = artifacts_dst / p.name
+                        dst_file.parent.mkdir(parents=True, exist_ok=True)
+                        if p.is_dir():
+                            self._copy_tree_clean(p, dst_file)
+                        else:
+                            shutil.copy2(p, dst_file)
+
+        # Copy hooks directory to bundle root if present in app_dir
+        app_hooks_dir = self.app_dir / "hooks"
+        if app_hooks_dir.exists() and app_hooks_dir.is_dir():
+            hooks_dst = bundle_dir / "hooks"
+            hooks_dst.mkdir(parents=True, exist_ok=True)
+            self._copy_tree_clean(app_hooks_dir, hooks_dst)
+
+        # 5. Generate app.json in bundle root pointing source_path to payload
         manifest_copy = AppManifest.from_dict(self.manifest.__dict__)
         manifest_copy.source_path = "payload"
         # Update relative subproject paths to payload/<subproject>
@@ -59,7 +90,7 @@ class AppBundlePackager:
         manifest_copy.subprojects = subprojects_in_bundle
         manifest_copy.to_file(bundle_dir / "app.json")
 
-        # 5. Generate Level-0 Installer Bootstrappers
+        # 6. Generate Level-0 Installer Bootstrappers
         self._generate_bootstrappers(bundle_dir)
 
         if create_zip:

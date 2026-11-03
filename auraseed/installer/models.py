@@ -24,6 +24,8 @@ class AppManifest:
     pip_install_args: List[str] = field(default_factory=list)
     subprojects: List[str] = field(default_factory=list)
     post_install_commands: List[str] = field(default_factory=list)
+    artifacts: List[str] = field(default_factory=list)
+    hooks: Dict[str, str] = field(default_factory=dict)
     create_desktop_shortcut: bool = True
     create_launchers: bool = True
     metadata: Dict[str, Any] = field(default_factory=dict)
@@ -42,6 +44,8 @@ class AppManifest:
             pip_install_args=data.get("pip_install_args", []),
             subprojects=data.get("subprojects", []),
             post_install_commands=data.get("post_install_commands", []),
+            artifacts=data.get("artifacts", []),
+            hooks=data.get("hooks", {}),
             create_desktop_shortcut=bool(data.get("create_desktop_shortcut", True)),
             create_launchers=bool(data.get("create_launchers", True)),
             metadata=data.get("metadata", {})
