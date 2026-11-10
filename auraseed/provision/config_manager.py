@@ -130,7 +130,11 @@ def backup_file(filepath: Path) -> Path:
     return backup_path
 
 
-def apply_user_configs(config_file: Optional[Path] = None, auto_yes: bool = False) -> Dict[str, Any]:
+def apply_user_configs(config_file: Optional[Path] = None, auto_yes: bool = False, quiet: bool = False) -> Dict[str, Any]:
+    def _log(msg: str) -> None:
+        if not quiet:
+            print(msg)
+
     if config_file is None:
         config_path_str = os.environ.get("AURASEED_BOOTSTRAP_CONFIG")
         if config_path_str:
@@ -173,16 +177,16 @@ def apply_user_configs(config_file: Optional[Path] = None, auto_yes: bool = Fals
                 with open(pip_file, "w", encoding="utf-8") as f:
                     f.write(content)
                 results["pip"] = {"updated": True, "path": str(pip_file), "backup": str(b_path)}
-                print(f"[AuraSeed] Backed up existing pip config to {b_path} and updated {pip_file}")
+                _log(f"[AuraSeed] Backed up existing pip config to {b_path} and updated {pip_file}")
             else:
                 results["pip"] = {"updated": False, "path": str(pip_file), "skipped": True}
-                print(f"[AuraSeed] Keeping existing pip config at {pip_file}")
+                _log(f"[AuraSeed] Keeping existing pip config at {pip_file}")
         else:
             pip_file.parent.mkdir(parents=True, exist_ok=True)
             with open(pip_file, "w", encoding="utf-8") as f:
                 f.write(content)
             results["pip"] = {"created": True, "path": str(pip_file)}
-            print(f"[AuraSeed] Created user pip config at {pip_file}")
+            _log(f"[AuraSeed] Created user pip config at {pip_file}")
 
     # 2. Conda configuration (.condarc)
     conda_cfg = data.get("conda", {})
@@ -205,16 +209,16 @@ def apply_user_configs(config_file: Optional[Path] = None, auto_yes: bool = Fals
                 with open(conda_file, "w", encoding="utf-8") as f:
                     f.write(content)
                 results["conda"] = {"updated": True, "path": str(conda_file), "backup": str(b_path)}
-                print(f"[AuraSeed] Backed up existing conda config to {b_path} and updated {conda_file}")
+                _log(f"[AuraSeed] Backed up existing conda config to {b_path} and updated {conda_file}")
             else:
                 results["conda"] = {"updated": False, "path": str(conda_file), "skipped": True}
-                print(f"[AuraSeed] Keeping existing conda config at {conda_file}")
+                _log(f"[AuraSeed] Keeping existing conda config at {conda_file}")
         else:
             conda_file.parent.mkdir(parents=True, exist_ok=True)
             with open(conda_file, "w", encoding="utf-8") as f:
                 f.write(content)
             results["conda"] = {"created": True, "path": str(conda_file)}
-            print(f"[AuraSeed] Created user conda config at {conda_file}")
+            _log(f"[AuraSeed] Created user conda config at {conda_file}")
 
     return results
 

@@ -14,9 +14,13 @@ from auraseed.discovery.manager import DiscoveryManager
 from auraseed.discovery.os.windows import WindowsDiscoverer
 from auraseed.discovery.os.linux import LinuxDiscoverer
 from auraseed.discovery.os.macos import MacOSDiscoverer
-from auraseed.governance.rules import LatestVersionStrategy
+from auraseed.discovery.adapters.arcpro import ArcProDiscoverer
+from auraseed.discovery.adapters.qgis import QgisDiscoverer
+from auraseed.governance.rules import LatestVersionStrategy, VersionSpecStrategy
 from auraseed.seed.sovereign import SovereignVenvEngine
 from auraseed.seed.isolation import HostIsolationEngine
+from auraseed.seed.artifacts import generate_launchers
+from auraseed.registry.manager import RegistryManager
 from auraseed.mvenv.models import MvenvRecord, MvenvCreateRequest, MvenvBundleMetadata
 from auraseed.mvenv.catalog import MvenvCatalog
 
@@ -81,29 +85,7 @@ class MvenvManager:
     def get_venv(self, name: str) -> Optional[MvenvRecord]:
         return self.catalog.get_record(name)
 
-    def _discover_best_interpreter(self) -> DiscoveredEnvironment:
-        """
-        Discovers the best host interpreter using AuraSeed's discovery engine.
-        """
-        manager = DiscoveryManager()
-        sys_plat = platform.system().lower()
-        if sys_plat == "windows":
-            manager.register_strategy(WindowsDiscoverer())
-        elif sys_plat == "linux":
-            manager.register_strategy(LinuxDiscoverer())
-        elif sys_plat == "darwin":
-            manager.register_strategy(MacOSDiscoverer())
-
-        results = manager.run_discovery()
-        env_list = list(results.values())
-
-        if env_list:
-            strategy = LatestVersionStrategy()
-            selected = strategy.select(env_list)
-            if selected:
-                return selected
-
-        # Fallback to current running Python
+    def _current_python_env(self) -> DiscoveredEnvironment:
         cur_exe = Path(sys.executable).resolve()
         ver_str = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
         bin_dirs = [cur_exe.parent]
@@ -112,18 +94,320 @@ class MvenvManager:
         if (cur_exe.parent / "Library" / "bin").exists():
             bin_dirs.append(cur_exe.parent / "Library" / "bin")
 
+        site_packages: List[Path] = []
+        win_sp = cur_exe.parent / "Lib" / "site-packages"
+        if win_sp.exists():
+            site_packages.append(win_sp)
+        posix_sp = cur_exe.parent.parent / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
+        if posix_sp.exists():
+            site_packages.append(posix_sp)
+
         return DiscoveredEnvironment(
             id="current_python",
             name="Current Python",
             executable=cur_exe,
             version=ver_str,
             source_type="system_fallback",
-            site_packages=[],
+            site_packages=site_packages,
             metadata={
                 "parent_bin_dir": str(cur_exe.parent),
                 "bin_dirs": [str(b) for b in bin_dirs]
             }
         )
+
+    def discover_interpreters(self, adapter: str = "all") -> List[DiscoveredEnvironment]:
+        """
+        Discovers available host Python interpreters using AuraSeed's discovery engine.
+        Supports adapter filters: all, windows_registry, linux_system, macos_system, arcpro, qgis.
+        """
+        manager = DiscoveryManager()
+        sys_plat = platform.system().lower()
+        norm_adapter = (adapter or "all").strip().lower()
+
+        if sys_plat == "windows" and norm_adapter in ("all", "windows_registry", "system", "os"):
+            manager.register_strategy(WindowsDiscoverer())
+        elif sys_plat == "linux" and norm_adapter in ("all", "linux_system", "system", "os"):
+            manager.register_strategy(LinuxDiscoverer())
+        elif sys_plat == "darwin" and norm_adapter in ("all", "macos_system", "system", "os"):
+            manager.register_strategy(MacOSDiscoverer())
+
+        if sys_plat == "windows" and norm_adapter in ("all", "arcpro", "arcpro_adapter"):
+            manager.register_strategy(ArcProDiscoverer())
+        if norm_adapter in ("all", "qgis", "qgis_adapter"):
+            manager.register_strategy(QgisDiscoverer())
+
+        results = manager.run_discovery()
+        env_list = list(results.values())
+
+        for env_item in env_list:
+            ver = (env_item.version or "").strip()
+            if not ver or not ver[0].isdigit() or ver.endswith(".x"):
+                probed = self._query_python_version(Path(env_item.executable))
+                if probed:
+                    env_item.version = probed
+
+        if norm_adapter == "all":
+            cur_fallback = self._current_python_env()
+            seen_exes = {str(Path(e.executable).resolve()).lower() for e in env_list}
+            if str(cur_fallback.executable.resolve()).lower() not in seen_exes:
+                env_list.append(cur_fallback)
+
+        return env_list
+
+    def discover_venvs(self, include_registry: bool = True) -> List[MvenvRecord]:
+        """
+        Discovers managed virtual environments in the configured catalog root,
+        and optionally scans OS AuraSeed registry manifests and default user venv folders.
+        """
+        records: List[MvenvRecord] = list(self.list_venvs())
+        seen_paths = {str(Path(r.path).resolve()).lower() for r in records if r.path}
+
+        if not include_registry:
+            return records
+
+        sys_plat = platform.system().lower()
+        candidate_reg_dirs = [Path.home() / ".auraseed"]
+        if sys_plat == "windows":
+            local_appdata = os.environ.get("LOCALAPPDATA")
+            if local_appdata:
+                candidate_reg_dirs.append(Path(local_appdata) / "auraseed")
+        elif sys_plat == "darwin":
+            candidate_reg_dirs.append(Path.home() / "Library" / "Application Support" / "auraseed")
+        else:
+            xdg_cfg = os.environ.get("XDG_CONFIG_HOME")
+            candidate_reg_dirs.append(Path(xdg_cfg) / "auraseed" if xdg_cfg else Path.home() / ".config" / "auraseed")
+
+        for reg_dir in candidate_reg_dirs:
+            try:
+                manifest = RegistryManager(reg_dir).read_manifest()
+                envs = manifest.get("environments", {})
+                if not isinstance(envs, dict):
+                    continue
+                for env_name, val in envs.items():
+                    if isinstance(val, str):
+                        cand_dir = Path(val)
+                    elif isinstance(val, dict):
+                        if val.get("bootstrapped"):
+                            continue
+                        raw_path = val.get("path") or val.get("venv_path") or val.get("install_dir")
+                        if not raw_path:
+                            continue
+                        cand_dir = Path(raw_path)
+                    else:
+                        continue
+
+                    if not cand_dir.is_dir():
+                        continue
+                    if not ((cand_dir / ".mvenv.json").exists() or (cand_dir / "pyvenv.cfg").exists()):
+                        continue
+                    resolved_str = str(cand_dir.resolve()).lower()
+                    if resolved_str in seen_paths:
+                        continue
+                    rec = self.catalog._load_record_from_dir(env_name, cand_dir.resolve())
+                    if rec is not None:
+                        records.append(rec)
+                        seen_paths.add(resolved_str)
+            except Exception:
+                continue
+
+        # Scan standard ~/.auraseed/{mvenvs,venvs} folders as well
+        for extra_root in (Path.home() / ".auraseed" / "mvenvs", Path.home() / ".auraseed" / "venvs"):
+            try:
+                if not extra_root.exists() or extra_root.resolve() == self.root_path.resolve():
+                    continue
+                for child in sorted(extra_root.iterdir()):
+                    if not child.is_dir() or child.name.startswith("."):
+                        continue
+                    if not ((child / ".mvenv.json").exists() or (child / "pyvenv.cfg").exists()):
+                        continue
+                    resolved_str = str(child.resolve()).lower()
+                    if resolved_str in seen_paths:
+                        continue
+                    rec = self.catalog._load_record_from_dir(child.name, child.resolve())
+                    if rec is not None:
+                        records.append(rec)
+                        seen_paths.add(resolved_str)
+            except Exception:
+                continue
+
+        return records
+
+    def _resolve_mvenv(self, name: str) -> MvenvRecord:
+        rec = self.get_venv(name)
+        if rec:
+            return rec
+
+        as_path = Path(name)
+        if as_path.exists() and as_path.is_dir():
+            loaded = self.catalog._load_record_from_dir(as_path.name, as_path.resolve())
+            if loaded:
+                return loaded
+
+        for disc in self.discover_venvs(include_registry=True):
+            if disc.name == name:
+                return disc
+
+        raise KeyError(f"Managed venv '{name}' not found.")
+
+    def get_activation_info(self, name: str) -> Dict[str, Any]:
+        """
+        Returns activation script paths, binary locations, and shell commands to use an mvenv.
+        """
+        rec = self._resolve_mvenv(name)
+        venv_dir = Path(rec.path)
+        py_exe = Path(rec.python_path) if rec.python_path else MvenvCatalog._find_python_exe(venv_dir)
+        pip_exe = Path(rec.pip_path) if rec.pip_path else MvenvCatalog._find_pip_exe(venv_dir)
+        is_win = platform.system().lower() == "windows"
+        scripts_dir = venv_dir / ("Scripts" if is_win else "bin")
+
+        activate_ps1 = scripts_dir / "Activate.ps1"
+        activate_bat = scripts_dir / "activate.bat"
+        activate_sh = (venv_dir / "bin" / "activate") if not is_win else (scripts_dir / "activate")
+        launcher = (venv_dir / "auraseed-run.cmd") if is_win else (venv_dir / "bin" / "auraseed-run.sh")
+
+        if is_win:
+            commands = {
+                "powershell": f'& "{activate_ps1}"' if activate_ps1.exists() else f'$env:PATH = "{scripts_dir};$env:PATH"',
+                "cmd": f'call "{activate_bat}"' if activate_bat.exists() else f'set "PATH={scripts_dir};%PATH%"',
+                "bash": f'source "{activate_sh.as_posix()}"' if activate_sh.exists() else f'export PATH="{scripts_dir.as_posix()}:$PATH"',
+                "direct_python": f'"{py_exe}"' if py_exe else "",
+            }
+        else:
+            commands = {
+                "bash": f'. "{activate_sh}"' if activate_sh.exists() else f'export PATH="{scripts_dir}:$PATH"',
+                "powershell": f'& "{activate_ps1}"' if activate_ps1.exists() else f'$env:PATH = "{scripts_dir}:$env:PATH"',
+                "direct_python": f'"{py_exe}"' if py_exe else "",
+            }
+
+        return {
+            "name": rec.name,
+            "venv_path": str(venv_dir),
+            "python_path": str(py_exe) if py_exe else "",
+            "pip_path": str(pip_exe) if pip_exe else "",
+            "scripts_dir": str(scripts_dir),
+            "activate_scripts": {
+                "powershell": str(activate_ps1) if activate_ps1.exists() else None,
+                "cmd": str(activate_bat) if activate_bat.exists() else None,
+                "bash": str(activate_sh) if activate_sh.exists() else None,
+            },
+            "launcher": str(launcher) if launcher.exists() else None,
+            "commands": commands,
+        }
+
+    def run_in_venv(
+        self,
+        name: str,
+        command: Optional[List[str]] = None,
+        python_args: Optional[List[str]] = None,
+        cwd: Optional[str] = None,
+        extra_env: Optional[Dict[str, str]] = None,
+        timeout: Optional[int] = 300
+    ) -> Dict[str, Any]:
+        """
+        Executes a command or Python script inside the managed virtual environment
+        with VIRTUAL_ENV and PATH isolated to that environment.
+        """
+        rec = self._resolve_mvenv(name)
+        venv_dir = Path(rec.path)
+        py_exe = Path(rec.python_path) if rec.python_path else MvenvCatalog._find_python_exe(venv_dir)
+        if not py_exe or not py_exe.exists():
+            raise FileNotFoundError(f"Python executable not found for mvenv '{name}' at '{rec.python_path}'.")
+
+        is_win = platform.system().lower() == "windows"
+        scripts_dir = venv_dir / ("Scripts" if is_win else "bin")
+
+        if command and python_args:
+            raise ValueError("Provide either 'command' or 'python_args', not both.")
+
+        if python_args is not None:
+            exec_cmd = [str(py_exe)] + [str(a) for a in python_args]
+        elif command:
+            cmd_list = [str(c) for c in command]
+            prog = cmd_list[0]
+            prog_lower = prog.lower()
+            if prog_lower in ("python", "python3", "python.exe", "python3.exe"):
+                resolved_prog = str(py_exe)
+            elif prog_lower in ("pip", "pip3", "pip.exe") and rec.pip_path and Path(rec.pip_path).exists():
+                resolved_prog = str(rec.pip_path)
+            else:
+                resolved_prog = prog
+                candidate_names = [prog, f"{prog}.exe", f"{prog}.cmd", f"{prog}.bat"] if is_win else [prog]
+                for cname in candidate_names:
+                    cand = scripts_dir / cname
+                    if cand.exists() and cand.is_file():
+                        resolved_prog = str(cand)
+                        break
+            exec_cmd = [resolved_prog] + cmd_list[1:]
+        else:
+            raise ValueError("No command or python arguments provided.")
+
+        env = os.environ.copy()
+        env["VIRTUAL_ENV"] = str(venv_dir)
+        env.pop("PYTHONHOME", None)
+        env.pop("__PYVENV_LAUNCHER__", None)
+
+        path_additions: List[str] = []
+        for d in (scripts_dir, venv_dir / "bin", venv_dir / "base"):
+            if d.exists():
+                path_additions.append(str(d))
+        if path_additions:
+            existing_path = env.get("PATH", "")
+            env["PATH"] = os.pathsep.join(path_additions + ([existing_path] if existing_path else []))
+
+        if extra_env:
+            for k, v in extra_env.items():
+                env[str(k)] = str(v)
+
+        res = subprocess.run(
+            exec_cmd,
+            cwd=str(Path(cwd).resolve()) if cwd else None,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=timeout
+        )
+
+        return {
+            "name": rec.name,
+            "command": exec_cmd,
+            "returncode": res.returncode,
+            "stdout": res.stdout,
+            "stderr": res.stderr,
+            "python_path": str(py_exe),
+            "venv_path": str(venv_dir)
+        }
+
+    def _discover_best_interpreter(
+        self,
+        adapter: str = "all",
+        python_spec: Optional[str] = None
+    ) -> DiscoveredEnvironment:
+        """
+        Discovers the best host interpreter using AuraSeed's discovery engine,
+        optionally constrained by adapter and semantic version specification.
+        """
+        norm_adapter = (adapter or "all").strip().lower()
+        env_list = self.discover_interpreters(adapter=norm_adapter)
+
+        if not env_list:
+            if norm_adapter != "all":
+                raise ValueError(f"No Python interpreters discovered for adapter '{adapter}'.")
+            return self._current_python_env()
+
+        if python_spec:
+            selected = VersionSpecStrategy(python_spec).select(env_list)
+            if not selected:
+                available = ", ".join(f"{e.name} ({e.version})" for e in env_list[:8])
+                raise ValueError(
+                    f"No discovered Python interpreter satisfies spec '{python_spec}' "
+                    f"(adapter='{adapter}'; available: {available})."
+                )
+            return selected
+
+        selected = LatestVersionStrategy().select(env_list)
+        if selected:
+            return selected
+        return self._current_python_env()
 
     def create_venv(self, req: MvenvCreateRequest) -> MvenvRecord:
         """
@@ -166,7 +450,10 @@ class MvenvManager:
                 site_packages=[]
             )
         else:
-            target_env = self._discover_best_interpreter()
+            target_env = self._discover_best_interpreter(
+                adapter=getattr(req, "adapter", "all") or "all",
+                python_spec=getattr(req, "python_spec", None)
+            )
 
         # 2. Seed venv scaffold
         seeder = SovereignVenvEngine()
@@ -210,6 +497,12 @@ class MvenvManager:
         for p in actual_packages:
             if p not in installed_packages:
                 installed_packages.append(p)
+
+        # Generate convenient OS launchers (auraseed-run.cmd / auraseed-run.sh)
+        try:
+            generate_launchers(dest_dir)
+        except Exception:
+            pass
 
         # Determine exact Python version
         py_version = self._query_python_version(python_exe) or target_env.version
@@ -287,6 +580,99 @@ class MvenvManager:
 
         self.catalog.remove_record(name)
         return True
+
+    def merge_venvs(
+        self,
+        source_names: List[str],
+        target_name: str,
+        delete_sources: bool = False,
+        repoint_apps: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Merges multiple source managed virtual environments into a single target environment.
+        Consolidates dependencies and reclaims disk space by repointing apps and pruning sources.
+        """
+        if not source_names:
+            raise ValueError("At least one source mvenv must be specified for merging.")
+
+        source_records: List[MvenvRecord] = []
+        for s in source_names:
+            rec = self.get_venv(s)
+            if not rec:
+                raise KeyError(f"Source mvenv '{s}' not found.")
+            source_records.append(rec)
+
+        # 1. Resolve or create target mvenv
+        target_rec = self.get_venv(target_name)
+        if not target_rec:
+            # Create target using base interpreter of first source
+            base_interp = source_records[0].base_interpreter or None
+            req = MvenvCreateRequest(
+                name=target_name,
+                base_python=base_interp,
+                sovereign=any(r.is_sovereign for r in source_records),
+                force=False
+            )
+            target_rec = self.create_venv(req)
+
+        # 2. Collect and install missing packages
+        target_python = Path(target_rec.python_path)
+        target_pip = Path(target_rec.pip_path) if target_rec.pip_path else None
+
+        existing_pkgs = set(p.lower().split("==")[0].split(">=")[0].split("<=")[0] for p in target_rec.packages)
+        all_source_pkgs: List[str] = []
+        for r in source_records:
+            for p in r.packages:
+                if p not in all_source_pkgs:
+                    all_source_pkgs.append(p)
+
+        to_install: List[str] = []
+        for pkg_spec in all_source_pkgs:
+            base_name = pkg_spec.lower().split("==")[0].split(">=")[0].split("<=")[0]
+            if base_name not in existing_pkgs:
+                to_install.append(pkg_spec)
+
+        if to_install:
+            self._run_pip_install(target_python, target_pip, to_install)
+            updated_pkgs = self._query_installed_packages(target_python)
+            target_rec.packages = updated_pkgs
+            target_rec.updated_at = datetime.now(timezone.utc).isoformat()
+            target_rec.size_bytes = MvenvCatalog._calculate_dir_size(Path(target_rec.path))
+            self.catalog.save_record(target_rec)
+
+        # 3. Repoint installed applications if requested
+        repointed_apps: List[str] = []
+        if repoint_apps:
+            try:
+                from auraseed.catalog.local import LocalAppManager
+                app_mgr = LocalAppManager()
+                for app in app_mgr.list_installed_apps():
+                    app_mvenv = app.get("mvenv_name")
+                    if app_mvenv in source_names and app_mvenv != target_name:
+                        app_mgr.relink_app_mvenv(app["name"], target_name, mvenv_manager=self)
+                        repointed_apps.append(app["name"])
+            except Exception:
+                pass
+
+        # 4. Calculate disk space to reclaim and prune sources
+        reclaimed_bytes = 0
+        deleted_sources: List[str] = []
+        for r in source_records:
+            if r.name != target_name:
+                reclaimed_bytes += r.size_bytes
+                if delete_sources:
+                    self.delete_venv(r.name)
+                    deleted_sources.append(r.name)
+
+        return {
+            "success": True,
+            "target": target_rec.to_dict(),
+            "merged_sources": [s for s in source_names if s != target_name],
+            "deleted_sources": deleted_sources,
+            "packages_installed": len(to_install),
+            "repointed_apps": repointed_apps,
+            "reclaimed_bytes": reclaimed_bytes if delete_sources else 0
+        }
 
     def export_bundle(self, name: str, output_path: Optional[Path] = None) -> Path:
         """
@@ -410,8 +796,9 @@ class MvenvManager:
         """
         Executes diagnostic verification of a managed environment.
         """
-        rec = self.get_venv(name)
-        if not rec:
+        try:
+            rec = self._resolve_mvenv(name)
+        except KeyError:
             return {"valid": False, "error": f"Mvenv '{name}' not found"}
 
         py_exe = Path(rec.python_path)

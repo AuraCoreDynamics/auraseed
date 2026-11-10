@@ -44,9 +44,35 @@ class WindowsDiscoverer(BaseDiscoverer):
                                 if not install_path:
                                     continue
                                 executable = Path(install_path) / "python.exe"
+                                if not executable.exists():
+                                    continue
                                 exe_str = str(executable.resolve()).lower()
-                                if executable.exists() and exe_str not in seen_paths:
+                                if exe_str not in seen_paths:
                                     seen_paths.add(exe_str)
+                                    # Determine semantic version (PEP 514 subkeys can be tags like AuraSeedBootstrapped or 3.12-64)
+                                    resolved_version = version_key_name.split("-")[0].strip()
+                                    if not resolved_version or not resolved_version[0].isdigit():
+                                        for reg_val in ("Version", "SysVersion"):
+                                            try:
+                                                v, _ = winreg.QueryValueEx(version_key, reg_val)
+                                                if v and str(v)[0].isdigit():
+                                                    resolved_version = str(v).split("-")[0].strip()
+                                                    break
+                                            except OSError:
+                                                pass
+                                    if not resolved_version or not resolved_version[0].isdigit():
+                                        try:
+                                            ver_res = subprocess.run(
+                                                [str(executable), "-c", "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}.{sys.version_info[2]}')"],
+                                                capture_output=True,
+                                                text=True,
+                                                timeout=3
+                                            )
+                                            if ver_res.returncode == 0 and ver_res.stdout.strip():
+                                                resolved_version = ver_res.stdout.strip()
+                                        except Exception:
+                                            pass
+
                                     site_packages = Path(install_path) / "Lib" / "site-packages"
                                     bin_dirs = [Path(install_path)]
                                     if (Path(install_path) / "DLLs").exists():
@@ -55,12 +81,13 @@ class WindowsDiscoverer(BaseDiscoverer):
                                         bin_dirs.append(Path(install_path) / "Library" / "bin")
                                     yield DiscoveredEnvironment(
                                         id=str(executable.resolve()),
-                                        name=f"Python {version_key_name} (Registry)",
+                                        name=f"Python {resolved_version} ({version_key_name})" if resolved_version != version_key_name else f"Python {version_key_name} (Registry)",
                                         executable=executable.resolve(),
-                                        version=version_key_name,
+                                        version=resolved_version,
                                         source_type=self.source_type,
                                         site_packages=[site_packages] if site_packages.exists() else [],
                                         metadata={
+                                            "registry_tag": version_key_name,
                                             "hive": "HKCU" if hive == winreg.HKEY_CURRENT_USER else "HKLM",
                                             "parent_bin_dir": str(Path(install_path).resolve()),
                                             "bin_dirs": [str(b.resolve()) for b in bin_dirs]

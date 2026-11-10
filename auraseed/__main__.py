@@ -22,8 +22,137 @@ from auraseed.models import SeedManifest
 from auraseed.mvenv.manager import MvenvManager
 from auraseed.mvenv.models import MvenvCreateRequest
 from auraseed.api.server import run_api_server
+from auraseed.api.mcp import AuraSeedMcpServer
 from auraseed.grid.mas_runner import run_as_mas
 from auraseed.grid.peer_transfer import P2PVenvClient
+
+
+def _split_exec_args(raw_args: List[str]):
+    """
+    Splits `mvenv run` / `mvenv python` CLI arguments into AuraSeed option tokens
+    and downstream child command arguments, supporting both `--` delimiter and
+    natural flag placement around the mvenv name.
+    """
+    if "--" in raw_args:
+        idx = raw_args.index("--")
+        return raw_args[:idx], raw_args[idx + 1:]
+
+    pre: List[str] = []
+    value_flags = {"--cwd", "--timeout", "--root"}
+    bool_flags = {"--json", "-h", "--help"}
+    saw_name = False
+    i = 0
+    while i < len(raw_args):
+        tok = raw_args[i]
+        if tok in value_flags:
+            pre.append(tok)
+            if i + 1 < len(raw_args):
+                pre.append(raw_args[i + 1])
+                i += 2
+            else:
+                i += 1
+            continue
+        if any(tok.startswith(f + "=") for f in value_flags) or tok in bool_flags:
+            pre.append(tok)
+            i += 1
+            continue
+        if not tok.startswith("-") and not saw_name:
+            pre.append(tok)
+            saw_name = True
+            i += 1
+            continue
+        if not saw_name and tok.startswith("-"):
+            pre.append(tok)
+            i += 1
+            continue
+        return pre, raw_args[i:]
+    return pre, []
+
+
+def _discovered_env_to_dict(env) -> dict:
+    return {
+        "id": env.id,
+        "name": env.name,
+        "executable": str(env.executable),
+        "version": env.version,
+        "source_type": env.source_type,
+        "site_packages": [str(p) for p in (env.site_packages or [])],
+        "metadata": env.metadata or {},
+    }
+
+
+def _print_discovery_payload(
+    mgr: MvenvManager,
+    adapter: str = "all",
+    interpreters_only: bool = False,
+    mvenvs_only: bool = False,
+    include_registry: bool = True,
+    as_json: bool = False,
+    interpreters_focus: bool = False,
+) -> int:
+    interpreters = []
+    mvenvs = []
+
+    if not mvenvs_only:
+        envs = mgr.discover_interpreters(adapter=adapter)
+        interpreters = [_discovered_env_to_dict(e) for e in envs]
+
+    if not interpreters_only:
+        venvs = mgr.discover_venvs(include_registry=include_registry)
+        mvenvs = [v.to_dict() for v in venvs]
+
+    if as_json:
+        payload = {
+            "root_path": str(mgr.root_path),
+            "adapter": adapter,
+            "interpreters": interpreters,
+            "mvenvs": mvenvs,
+        }
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    if not interpreters_only and not (interpreters_focus and not mvenvs):
+        print(f"Discovered Managed Virtual Environments ({len(mvenvs)}):")
+        for r in mvenvs:
+            sov = " [sovereign]" if r.get("is_sovereign") else ""
+            print(f"  - {r['name']:<20} Python {r.get('python_version', 'unknown'):<8} ({len(r.get('packages', []))} pkgs){sov}")
+            print(f"    Root:   {r.get('path')}")
+            print(f"    Python: {r.get('python_path')}")
+
+    if not mvenvs_only:
+        if not interpreters_only:
+            print()
+        print(f"Discovered Base Python Interpreters ({len(interpreters)}, adapter={adapter}):")
+        for e in interpreters:
+            print(f"  - {e['name']} (Python {e['version']}, source={e['source_type']})")
+            print(f"    Executable: {e['executable']}")
+
+    return 0
+
+
+def handle_discover_cli(args: List[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="auraseed discover",
+        description="Discover host Python interpreters and existing AuraSeed managed virtual environments."
+    )
+    parser.add_argument("--adapter", default="all", help="Interpreter discovery adapter filter (all, windows_registry, linux_system, macos_system, arcpro, qgis)")
+    parser.add_argument("--interpreters-only", action="store_true", help="Only scan host base interpreters")
+    parser.add_argument("--mvenvs-only", action="store_true", help="Only scan managed virtual environments")
+    parser.add_argument("--no-registry", action="store_true", help="Skip global OS registry manifests and default ~/.auraseed directories")
+    parser.add_argument("--root", type=str, help="Custom mvenv root directory")
+    parser.add_argument("--json", action="store_true", help="Output as JSON")
+
+    parsed = parser.parse_args(args)
+    root_path = Path(parsed.root) if parsed.root else None
+    mgr = MvenvManager(root_path)
+    return _print_discovery_payload(
+        mgr=mgr,
+        adapter=parsed.adapter,
+        interpreters_only=parsed.interpreters_only,
+        mvenvs_only=parsed.mvenvs_only,
+        include_registry=not parsed.no_registry,
+        as_json=parsed.json,
+    )
 
 
 
@@ -51,12 +180,24 @@ def handle_mvenv_cli(args: List[str]) -> int:
     p_list.add_argument("--json", action="store_true", help="Output as JSON")
     p_list.add_argument("--root", type=str, help="Custom mvenv root directory")
 
+    # discover
+    p_discover = subparsers.add_parser("discover", help="Discover host Python interpreters and managed virtual environments")
+    p_discover.add_argument("--adapter", default="all", help="Interpreter discovery adapter filter (all, windows_registry, linux_system, macos_system, arcpro, qgis)")
+    p_discover.add_argument("--interpreters", action="store_true", help="Include base host interpreters (text output focuses on interpreters when set alone)")
+    p_discover.add_argument("--interpreters-only", action="store_true", help="Only scan base host Python interpreters")
+    p_discover.add_argument("--mvenvs-only", action="store_true", help="Only scan managed virtual environments")
+    p_discover.add_argument("--no-registry", action="store_true", help="Skip global OS registry manifests and default ~/.auraseed directories")
+    p_discover.add_argument("--root", type=str, help="Custom mvenv root directory")
+    p_discover.add_argument("--json", action="store_true", help="Output as JSON")
+
     # create
     p_create = subparsers.add_parser("create", help="Create a new managed virtual environment")
     p_create.add_argument("name", help="Name of the mvenv")
     p_create.add_argument("--packages", nargs="+", help="Pip packages to install")
     p_create.add_argument("-r", "--requirements", help="Path to requirements.txt")
     p_create.add_argument("--base", help="Path to base Python executable")
+    p_create.add_argument("--spec", help="Version specifier constraint for discovered interpreter (e.g. '>=3.11', '==3.12.*')")
+    p_create.add_argument("--adapter", default="all", help="Interpreter discovery adapter (all, windows_registry, linux_system, macos_system, arcpro, qgis)")
     p_create.add_argument("--no-sovereign", action="store_true", help="Disable host isolation")
     p_create.add_argument("--force", action="store_true", help="Overwrite if directory exists")
     p_create.add_argument("--dest", help="Explicit target directory")
@@ -68,6 +209,29 @@ def handle_mvenv_cli(args: List[str]) -> int:
     p_info.add_argument("name", help="Name of the mvenv")
     p_info.add_argument("--root", type=str, help="Custom mvenv root directory")
     p_info.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # activate
+    p_activate = subparsers.add_parser("activate", help="Print activation scripts, python path, and shell commands for an mvenv")
+    p_activate.add_argument("name", help="Name or path of the mvenv")
+    p_activate.add_argument("--shell", choices=["powershell", "cmd", "bash", "all"], default="all", help="Target shell format")
+    p_activate.add_argument("--root", type=str, help="Custom mvenv root directory")
+    p_activate.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # run
+    p_run = subparsers.add_parser("run", help="Run an arbitrary command inside an mvenv with isolated VIRTUAL_ENV and PATH")
+    p_run.add_argument("name", help="Name or path of the mvenv")
+    p_run.add_argument("--cwd", type=str, help="Working directory for the command")
+    p_run.add_argument("--timeout", type=int, default=300, help="Execution timeout in seconds")
+    p_run.add_argument("--root", type=str, help="Custom mvenv root directory")
+    p_run.add_argument("--json", action="store_true", help="Output structured JSON result")
+
+    # python
+    p_python = subparsers.add_parser("python", help="Run Python inside an mvenv (e.g. `-c ...`, `-m ...`, script.py)")
+    p_python.add_argument("name", help="Name or path of the mvenv")
+    p_python.add_argument("--cwd", type=str, help="Working directory for execution")
+    p_python.add_argument("--timeout", type=int, default=300, help="Execution timeout in seconds")
+    p_python.add_argument("--root", type=str, help="Custom mvenv root directory")
+    p_python.add_argument("--json", action="store_true", help="Output structured JSON result")
 
     # install
     p_install = subparsers.add_parser("install", help="Install packages into an mvenv")
@@ -82,6 +246,7 @@ def handle_mvenv_cli(args: List[str]) -> int:
     p_delete = subparsers.add_parser("delete", help="Delete a managed virtual environment")
     p_delete.add_argument("name", help="Name of the mvenv")
     p_delete.add_argument("--root", type=str, help="Custom mvenv root directory")
+    p_delete.add_argument("--json", action="store_true", help="Output as JSON")
 
     # verify
     p_verify = subparsers.add_parser("verify", help="Verify executable and health of an mvenv")
@@ -94,6 +259,7 @@ def handle_mvenv_cli(args: List[str]) -> int:
     p_export.add_argument("name", help="Name of the mvenv")
     p_export.add_argument("--out", help="Output bundle path")
     p_export.add_argument("--root", type=str, help="Custom mvenv root directory")
+    p_export.add_argument("--json", action="store_true", help="Output as JSON")
 
     # import
     p_import = subparsers.add_parser("import", help="Import an mvenv bundle into the catalog")
@@ -103,7 +269,22 @@ def handle_mvenv_cli(args: List[str]) -> int:
     p_import.add_argument("--root", type=str, help="Custom mvenv root directory")
     p_import.add_argument("--json", action="store_true", help="Output as JSON")
 
-    parsed = parser.parse_args(args)
+    # merge
+    p_merge = subparsers.add_parser("merge", help="Merge multiple mvenvs to consolidate packages and save disk space")
+    p_merge.add_argument("sources", nargs="+", help="Source mvenv names to merge")
+    p_merge.add_argument("--target", required=True, help="Target merged mvenv name")
+    p_merge.add_argument("--delete-sources", action="store_true", help="Delete source mvenvs to reclaim disk space")
+    p_merge.add_argument("--no-repoint", action="store_true", help="Do not repoint installed apps to target")
+    p_merge.add_argument("--root", type=str, help="Custom mvenv root directory")
+    p_merge.add_argument("--json", action="store_true", help="Output as JSON")
+
+    exec_tail: List[str] = []
+    parse_target = args
+    if args and args[0] in ("run", "python"):
+        pre, exec_tail = _split_exec_args(args[1:])
+        parse_target = [args[0]] + pre
+
+    parsed = parser.parse_args(parse_target)
     if not parsed.mvenv_cmd:
         parser.print_help()
         return 1
@@ -123,6 +304,18 @@ def handle_mvenv_cli(args: List[str]) -> int:
                 print(f"    Path: {r.python_path}")
         return 0
 
+    if parsed.mvenv_cmd == "discover":
+        interpreters_only = bool(parsed.interpreters_only or (parsed.interpreters and not parsed.mvenvs_only))
+        return _print_discovery_payload(
+            mgr=mgr,
+            adapter=parsed.adapter,
+            interpreters_only=interpreters_only if not parsed.json else bool(parsed.interpreters_only),
+            mvenvs_only=bool(parsed.mvenvs_only),
+            include_registry=not parsed.no_registry,
+            as_json=bool(parsed.json),
+            interpreters_focus=bool(parsed.interpreters),
+        )
+
     if parsed.mvenv_cmd == "create":
         req = MvenvCreateRequest(
             name=parsed.name,
@@ -131,7 +324,9 @@ def handle_mvenv_cli(args: List[str]) -> int:
             requirements_file=parsed.requirements,
             sovereign=not parsed.no_sovereign,
             force=parsed.force,
-            target_dir=parsed.dest
+            target_dir=parsed.dest,
+            python_spec=parsed.spec,
+            adapter=parsed.adapter
         )
         try:
             rec = mgr.create_venv(req)
@@ -148,7 +343,10 @@ def handle_mvenv_cli(args: List[str]) -> int:
             return 1
 
     if parsed.mvenv_cmd == "info":
-        rec = mgr.get_venv(parsed.name)
+        try:
+            rec = mgr._resolve_mvenv(parsed.name)
+        except KeyError:
+            rec = None
         if not rec:
             print(f"Mvenv '{parsed.name}' not found.", file=sys.stderr)
             return 1
@@ -166,7 +364,62 @@ def handle_mvenv_cli(args: List[str]) -> int:
                 print(f"    - {pkg}")
         return 0
 
+    if parsed.mvenv_cmd == "activate":
+        try:
+            info = mgr.get_activation_info(parsed.name)
+        except Exception as e:
+            print(f"Error resolving mvenv activation: {e}", file=sys.stderr)
+            return 1
+        if getattr(parsed, "json", False):
+            print(json.dumps(info, indent=2))
+        else:
+            print(f"Activation Details for '{info['name']}' ({info['venv_path']}):")
+            print(f"  Python:   {info['python_path']}")
+            if info.get("launcher"):
+                print(f"  Launcher: {info['launcher']}")
+            cmds = info.get("commands", {})
+            if parsed.shell == "all":
+                for sh_name, cmd_str in cmds.items():
+                    print(f"  {sh_name:<14} {cmd_str}")
+            else:
+                print(f"  {parsed.shell}: {cmds.get(parsed.shell, '')}")
+        return 0
+
+    if parsed.mvenv_cmd in ("run", "python"):
+        if not exec_tail:
+            print(f"Error: no {'python arguments' if parsed.mvenv_cmd == 'python' else 'command'} provided.", file=sys.stderr)
+            return 1
+        try:
+            if parsed.mvenv_cmd == "python":
+                res = mgr.run_in_venv(
+                    parsed.name,
+                    python_args=exec_tail,
+                    cwd=parsed.cwd,
+                    timeout=parsed.timeout,
+                )
+            else:
+                res = mgr.run_in_venv(
+                    parsed.name,
+                    command=exec_tail,
+                    cwd=parsed.cwd,
+                    timeout=parsed.timeout,
+                )
+            if getattr(parsed, "json", False):
+                print(json.dumps(res, indent=2))
+            else:
+                if res.get("stdout"):
+                    sys.stdout.write(res["stdout"])
+                if res.get("stderr"):
+                    sys.stderr.write(res["stderr"])
+            return int(res.get("returncode", 0))
+        except Exception as e:
+            print(f"Error executing in mvenv '{parsed.name}': {e}", file=sys.stderr)
+            return 1
+
     if parsed.mvenv_cmd == "install":
+        if not parsed.requirements and not parsed.packages:
+            print("Error specifying packages: provide package names or -r/--requirements.", file=sys.stderr)
+            return 1
         try:
             if parsed.requirements:
                 rec = mgr.install_requirements(parsed.name, parsed.requirements)
@@ -184,7 +437,10 @@ def handle_mvenv_cli(args: List[str]) -> int:
     if parsed.mvenv_cmd == "delete":
         deleted = mgr.delete_venv(parsed.name)
         if deleted:
-            print(f"Deleted mvenv '{parsed.name}'.")
+            if getattr(parsed, "json", False):
+                print(json.dumps({"success": True, "name": parsed.name}, indent=2))
+            else:
+                print(f"Deleted mvenv '{parsed.name}'.")
             return 0
         else:
             print(f"Mvenv '{parsed.name}' not found.", file=sys.stderr)
@@ -207,7 +463,10 @@ def handle_mvenv_cli(args: List[str]) -> int:
         try:
             out_path = Path(parsed.out) if parsed.out else None
             bundle = mgr.export_bundle(parsed.name, out_path)
-            print(f"Exported bundle: {bundle}")
+            if getattr(parsed, "json", False):
+                print(json.dumps({"name": parsed.name, "bundle_path": str(bundle)}, indent=2))
+            else:
+                print(f"Exported bundle: {bundle}")
             return 0
         except Exception as e:
             print(f"Error exporting bundle: {e}", file=sys.stderr)
@@ -226,6 +485,29 @@ def handle_mvenv_cli(args: List[str]) -> int:
             return 0
         except Exception as e:
             print(f"Error importing bundle: {e}", file=sys.stderr)
+            return 1
+
+    if parsed.mvenv_cmd == "merge":
+        try:
+            res = mgr.merge_venvs(
+                source_names=parsed.sources,
+                target_name=parsed.target,
+                delete_sources=parsed.delete_sources,
+                repoint_apps=not parsed.no_repoint
+            )
+            if getattr(parsed, "json", False):
+                print(json.dumps(res, indent=2))
+            else:
+                saved_mb = f"{res.get('reclaimed_bytes', 0) / (1024*1024):.1f} MB"
+                print(f"Successfully merged {len(res.get('merged_sources', []))} mvenvs into '{parsed.target}'.")
+                print(f"  Packages installed: {res.get('packages_installed', 0)}")
+                if res.get('deleted_sources'):
+                    print(f"  Pruned sources: {', '.join(res.get('deleted_sources'))} (reclaimed {saved_mb})")
+                if res.get('repointed_apps'):
+                    print(f"  Repointed apps: {', '.join(res.get('repointed_apps'))}")
+            return 0
+        except Exception as e:
+            print(f"Error merging mvenvs: {e}", file=sys.stderr)
             return 1
 
     return 0
@@ -300,16 +582,168 @@ def handle_package_cli(args: List[str]) -> int:
         return 1
 
 
+def handle_deploy_cli(args: List[str]) -> int:
+    parser = argparse.ArgumentParser(prog="auraseed deploy", description="Package and deploy an application to an AuraSeed catalog server.")
+    parser.add_argument("app_dir", nargs="?", default=".", help="Path to app directory (containing app.json) or package bundle")
+    parser.add_argument("--server", default=None, help="AuraSeed server URL (default: default attached catalog or http://localhost:7099)")
+    parser.add_argument("--json", action="store_true", help="Output as JSON")
+    parsed = parser.parse_args(args)
+
+    from auraseed.client import AuraSeedClient
+    from auraseed.catalog.sources import CatalogRegistry
+    reg = CatalogRegistry()
+    server_url = parsed.server or reg.get_default_catalog()
+
+    try:
+        client = AuraSeedClient(base_url=server_url)
+        if not parsed.json:
+            print(f"[AuraSeed Deploy] Packaging and deploying '{parsed.app_dir}' to {server_url}...")
+        res = client.deploy_app(parsed.app_dir)
+        if parsed.json:
+            print(json.dumps(res, indent=2))
+        else:
+            print(f"[AuraSeed Deploy] Successfully deployed {res.get('name')} v{res.get('version')}!")
+            print(f"  Display Name: {res.get('display_name')}")
+            print(f"  Bundle Size:  {res.get('size_bytes', 0) / (1024*1024):.1f} MB")
+            print(f"  Download URL: {res.get('download_url')}")
+        return 0
+    except Exception as e:
+        print(f"[AuraSeed Deploy] Error: {e}", file=sys.stderr)
+        return 1
+
+
+def handle_catalog_cli(args: List[str]) -> int:
+    parser = argparse.ArgumentParser(prog="auraseed catalog", description="Manage and query AuraSeed application catalogs.")
+    subparsers = parser.add_subparsers(dest="catalog_cmd", help="Subcommand to execute")
+
+    p_list = subparsers.add_parser("list", help="List applications in catalog")
+    p_list.add_argument("--server", default=None, help="Catalog server URL")
+    p_list.add_argument("-q", "--query", help="Filter applications")
+    p_list.add_argument("--json", action="store_true", help="Output as JSON")
+
+    p_get = subparsers.add_parser("get", help="Get application metadata from catalog")
+    p_get.add_argument("name", help="Application identifier")
+    p_get.add_argument("--server", default=None, help="Catalog server URL")
+    p_get.add_argument("--json", action="store_true", help="Output as JSON")
+
+    p_download = subparsers.add_parser("download", help="Download application bundle from catalog")
+    p_download.add_argument("name", help="Application identifier")
+    p_download.add_argument("--server", default=None, help="Catalog server URL")
+    p_download.add_argument("--out", "-o", default=None, help="Output destination path")
+
+    p_sources = subparsers.add_parser("sources", help="List attached catalog sources")
+    p_sources.add_argument("--json", action="store_true", help="Output as JSON")
+
+    p_attach = subparsers.add_parser("attach", help="Attach a new catalog server URL")
+    p_attach.add_argument("url", help="Catalog server URL")
+    p_attach.add_argument("--label", help="Friendly label")
+    p_attach.add_argument("--default", action="store_true", help="Set as default catalog")
+
+    p_detach = subparsers.add_parser("detach", help="Detach a catalog server URL")
+    p_detach.add_argument("url", help="Catalog server URL")
+
+    parsed = parser.parse_args(args)
+    if not parsed.catalog_cmd:
+        parser.print_help()
+        return 1
+
+    from auraseed.client import AuraSeedClient
+    from auraseed.catalog.sources import CatalogRegistry
+    reg = CatalogRegistry()
+    server_url = getattr(parsed, "server", None) or reg.get_default_catalog()
+
+    if parsed.catalog_cmd == "sources":
+        sources = reg.list_catalogs()
+        if getattr(parsed, "json", False):
+            print(json.dumps(sources, indent=2))
+        else:
+            print("Attached AuraSeed Catalogs:")
+            for s in sources:
+                def_mark = " (default)" if s.get("is_default") else ""
+                print(f"  - {s.get('label', '')}: {s['url']}{def_mark}")
+        return 0
+
+    if parsed.catalog_cmd == "attach":
+        res = reg.add_catalog(parsed.url, label=parsed.label, set_default=parsed.default)
+        print(f"Attached catalog: {res['label']} ({res['url']})")
+        return 0
+
+    if parsed.catalog_cmd == "detach":
+        ok = reg.remove_catalog(parsed.url)
+        if ok:
+            print(f"Detached catalog: {parsed.url}")
+            return 0
+        else:
+            print(f"Catalog URL not found: {parsed.url}", file=sys.stderr)
+            return 1
+
+    client = AuraSeedClient(base_url=server_url)
+
+    if parsed.catalog_cmd == "list":
+        try:
+            apps = client.list_apps(query=parsed.query)
+            if getattr(parsed, "json", False):
+                print(json.dumps(apps, indent=2))
+            else:
+                print(f"Applications in {server_url} ({len(apps)} found):")
+                for a in apps:
+                    size_mb = f"{a.get('size_bytes', 0) / (1024*1024):.1f} MB"
+                    print(f"  - {a['name']:<18} v{a.get('version', '1.0.0'):<8} ({size_mb}) - {a.get('display_name')}")
+            return 0
+        except Exception as e:
+            print(f"Error querying catalog: {e}", file=sys.stderr)
+            return 1
+
+    if parsed.catalog_cmd == "get":
+        try:
+            app = client.get_app(parsed.name)
+            if getattr(parsed, "json", False):
+                print(json.dumps(app, indent=2))
+            else:
+                print(f"Application: {app['name']}")
+                print(f"  Display Name: {app.get('display_name')}")
+                print(f"  Version:      {app.get('version')}")
+                print(f"  Description:  {app.get('description')}")
+                print(f"  Port:         {app.get('default_port')}")
+                print(f"  Entrypoint:   {app.get('entrypoint_command')}")
+            return 0
+        except Exception as e:
+            print(f"Error retrieving application: {e}", file=sys.stderr)
+            return 1
+
+    if parsed.catalog_cmd == "download":
+        try:
+            out_dest = Path(parsed.out) if parsed.out else Path.cwd()
+            saved = client.download_app(parsed.name, out_dest)
+            print(f"Downloaded bundle: {saved}")
+            return 0
+        except Exception as e:
+            print(f"Error downloading bundle: {e}", file=sys.stderr)
+            return 1
+
+    return 0
+
+
 def main() -> int:
     from auraseed.provision.config_manager import apply_user_configs
-    apply_user_configs()
+    quiet_mode = ("--json" in sys.argv or "--mcp" in sys.argv)
+    apply_user_configs(auto_yes=quiet_mode, quiet=quiet_mode)
     if len(sys.argv) > 1:
         cmd = sys.argv[1].lower()
+        if cmd == "discover":
+            return handle_discover_cli(sys.argv[2:])
         if cmd in ("install-app", "install"):
             from auraseed.installer.cli import run_installer_cli
             return run_installer_cli(sys.argv[2:])
         if cmd in ("package-app", "bundle-app", "package"):
             return handle_package_cli(sys.argv[2:])
+        if cmd == "deploy":
+            return handle_deploy_cli(sys.argv[2:])
+        if cmd == "catalog":
+            return handle_catalog_cli(sys.argv[2:])
+        if cmd in ("gui", "hub", "app-manager"):
+            from auraseed.gui import launch_gui
+            return launch_gui()
         if cmd == "mvenv":
             return handle_mvenv_cli(sys.argv[2:])
         if cmd == "serve":

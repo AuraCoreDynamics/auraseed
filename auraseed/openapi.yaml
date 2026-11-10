@@ -1,0 +1,700 @@
+openapi: 3.0.3
+info:
+  title: AuraSeed Server API
+  description: Independent specification for AuraSeed-compliant application catalog, deployment, and managed virtual environment (mvenv) servers.
+  version: 1.0.0
+servers:
+  - url: http://localhost:7099
+    description: Local AuraSeed API Daemon
+
+paths:
+  /health:
+    get:
+      summary: Service Health Probe
+      description: Returns health status, runtime information, connected grid status, and catalog counts.
+      responses:
+        '200':
+          description: Service is healthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  /api/v1/openapi.json:
+    get:
+      summary: OpenAPI Specification (JSON)
+      description: Returns the version-controlled OpenAPI 3.0 specification in JSON format.
+      responses:
+        '200':
+          description: OpenAPI JSON specification.
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/v1/openapi.yaml:
+    get:
+      summary: OpenAPI Specification (YAML)
+      description: Returns the version-controlled OpenAPI 3.0 specification in YAML format.
+      responses:
+        '200':
+          description: OpenAPI YAML specification.
+          content:
+            text/yaml:
+              schema:
+                type: string
+
+  /api/v1/discovery:
+    get:
+      summary: Discover Host Python Runtimes
+      description: Scans host environment and returns discovered Python interpreters.
+      responses:
+        '200':
+          description: List of discovered Python runtimes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscoveryResponse'
+
+  /api/v1/apps:
+    get:
+      summary: List Catalog Applications
+      description: Returns all published applications in the server catalog.
+      parameters:
+        - name: q
+          in: query
+          description: Search term to filter apps by name, display name, or description.
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of cataloged applications.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppCatalogListResponse'
+    post:
+      summary: Deploy Application Package
+      description: Uploads and deploys an application package (.zip or .tar.gz bundle containing app.json) to the server catalog.
+      requestBody:
+        required: true
+        description: Binary application package archive (.zip or .tar.gz)
+        content:
+          application/zip:
+            schema:
+              type: string
+              format: binary
+          application/gzip:
+            schema:
+              type: string
+              format: binary
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '201':
+          description: Application successfully deployed and cataloged.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CatalogApp'
+        '400':
+          description: Invalid application package or missing manifest.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/apps/{name}:
+    get:
+      summary: Get Catalog Application Details
+      description: Retrieves metadata for a specific application in the catalog.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: Application identifier
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Application metadata.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CatalogApp'
+        '404':
+          description: Application not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      summary: Delete Application from Catalog
+      description: Removes an application and its deployed package bundle from the catalog.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: Application identifier
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Application successfully deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+        '404':
+          description: Application not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/apps/{name}/download:
+    get:
+      summary: Download Application Package Bundle
+      description: Downloads the binary installer package (.zip or .tar.gz) for the application.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: Application identifier
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Application bundle archive.
+          content:
+            application/zip:
+              schema:
+                type: string
+                format: binary
+            application/gzip:
+              schema:
+                type: string
+                format: binary
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: Application bundle not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/mvenv:
+    get:
+      summary: List Managed Virtual Environments
+      description: Lists all cataloged mvenvs hosted on this node.
+      responses:
+        '200':
+          description: List of mvenv records.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MvenvListResponse'
+    post:
+      summary: Create Managed Virtual Environment
+      description: Seeds, isolates, and catalogs a new mvenv.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MvenvCreateRequest'
+      responses:
+        '201':
+          description: Mvenv created successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MvenvRecord'
+        '400':
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/mvenv/{name}:
+    get:
+      summary: Get Mvenv Details
+      description: Retrieves metadata for a specific mvenv.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Mvenv record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MvenvRecord'
+        '404':
+          description: Mvenv not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      summary: Delete Mvenv
+      description: Deletes an mvenv from disk and removes it from the catalog.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Mvenv deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+        '404':
+          description: Mvenv not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/mvenv/{name}/verify:
+    get:
+      summary: Verify Mvenv Health
+      description: Checks binary health and execution status of an mvenv.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Verification report.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MvenvVerifyResponse'
+        '400':
+          description: Verification failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MvenvVerifyResponse'
+
+  /api/v1/mvenv/{name}/install:
+    post:
+      summary: Install Packages into Mvenv
+      description: Installs pip packages or requirements file into the specified mvenv.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                packages:
+                  type: array
+                  items:
+                    type: string
+                requirements:
+                  type: string
+                  description: Optional requirements.txt file path
+                upgrade:
+                  type: boolean
+                  default: false
+      responses:
+        '200':
+          description: Packages installed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MvenvRecord'
+
+  /api/v1/mvenv/{name}/bundle:
+    get:
+      summary: Download Mvenv Bundle Archive
+      description: Downloads a portable sovereign tar.gz bundle for P2P distribution.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Tar.gz bundle stream.
+          content:
+            application/gzip:
+              schema:
+                type: string
+                format: binary
+
+  /api/v1/mvenv/bundle:
+    post:
+      summary: Import Mvenv Bundle Archive
+      description: Uploads and unpackages a tar.gz bundle into local mvenv catalog.
+      parameters:
+        - name: X-Mvenv-Name
+          in: header
+          required: false
+          description: Optional target name override
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/gzip:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '201':
+          description: Bundle imported.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MvenvRecord'
+
+  /api/v1/mvenv/merge:
+    post:
+      summary: Merge Multiple Mvenvs
+      description: Combines packages from multiple source mvenvs into a single target mvenv to save disk space, optionally deleting sources and repointing apps.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MvenvMergeRequest'
+      responses:
+        '200':
+          description: Merge completed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MvenvMergeResponse'
+        '400':
+          description: Invalid merge request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /mcp:
+    post:
+      summary: Streamable HTTP MCP Endpoint
+      description: Model Context Protocol (MCP) JSON-RPC 2.0 endpoint bridging tool calls to the AuraSeed CLI and Python API.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: JSON-RPC 2.0 response payload.
+          content:
+            application/json:
+              schema:
+                type: object
+        '202':
+          description: Notification accepted with no response payload.
+
+components:
+  schemas:
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: ok
+        service:
+          type: string
+          example: auraseed
+        version:
+          type: string
+          example: 0.2.0
+        is_grid_connected:
+          type: boolean
+        node_id:
+          type: string
+          nullable: true
+        mvenv_root:
+          type: string
+        mvenv_count:
+          type: integer
+        app_count:
+          type: integer
+
+    DiscoveryResponse:
+      type: object
+      properties:
+        interpreters:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              name:
+                type: string
+              executable:
+                type: string
+              version:
+                type: string
+              source_type:
+                type: string
+
+    CatalogApp:
+      type: object
+      required:
+        - name
+        - display_name
+        - version
+      properties:
+        name:
+          type: string
+          example: bijou
+        display_name:
+          type: string
+          example: Bijou Causal Graph Engine
+        version:
+          type: string
+          example: 0.1.0
+        description:
+          type: string
+          example: Multi-Echelon Impact & Causal Graph Engine
+        entrypoint_command:
+          type: string
+          example: bijou --mode standalone --port {port}
+        default_port:
+          type: integer
+          nullable: true
+          example: 8000
+        size_bytes:
+          type: integer
+          example: 5242880
+        bundle_filename:
+          type: string
+          example: bijou-0.1.0.zip
+        bundle_sha256:
+          type: string
+          example: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+        download_url:
+          type: string
+          example: /api/v1/apps/bijou/download
+        created_at:
+          type: string
+        updated_at:
+          type: string
+        subprojects:
+          type: array
+          items:
+            type: string
+        pip_install_args:
+          type: array
+          items:
+            type: string
+        artifacts:
+          type: array
+          items:
+            type: string
+        metadata:
+          type: object
+
+    AppCatalogListResponse:
+      type: object
+      properties:
+        apps:
+          type: array
+          items:
+            $ref: '#/components/schemas/CatalogApp'
+        total:
+          type: integer
+
+    MvenvRecord:
+      type: object
+      required:
+        - name
+        - path
+        - python_path
+      properties:
+        name:
+          type: string
+        path:
+          type: string
+        python_path:
+          type: string
+        pip_path:
+          type: string
+        python_version:
+          type: string
+        base_interpreter:
+          type: string
+        created_at:
+          type: string
+        updated_at:
+          type: string
+        packages:
+          type: array
+          items:
+            type: string
+        size_bytes:
+          type: integer
+        is_sovereign:
+          type: boolean
+        bundle_hash:
+          type: string
+          nullable: true
+        metadata:
+          type: object
+
+    MvenvListResponse:
+      type: object
+      properties:
+        mvenvs:
+          type: array
+          items:
+            $ref: '#/components/schemas/MvenvRecord'
+        total:
+          type: integer
+
+    MvenvCreateRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+        base_python:
+          type: string
+          nullable: true
+        packages:
+          type: array
+          items:
+            type: string
+        requirements_file:
+          type: string
+          nullable: true
+        sovereign:
+          type: boolean
+          default: true
+        force:
+          type: boolean
+          default: false
+        target_dir:
+          type: string
+          nullable: true
+        python_spec:
+          type: string
+          nullable: true
+          description: Version specifier constraint for base interpreter discovery (e.g. >=3.11)
+        adapter:
+          type: string
+          default: all
+          description: Interpreter discovery adapter filter (all, arcpro, qgis, windows_registry, linux_system, macos_system)
+        tags:
+          type: object
+
+    MvenvVerifyResponse:
+      type: object
+      properties:
+        valid:
+          type: boolean
+        name:
+          type: string
+        python_path:
+          type: string
+        python_version:
+          type: string
+        is_sovereign:
+          type: boolean
+        size_bytes:
+          type: integer
+        package_count:
+          type: integer
+        error:
+          type: string
+          nullable: true
+
+    MvenvMergeRequest:
+      type: object
+      required:
+        - sources
+        - target
+      properties:
+        sources:
+          type: array
+          items:
+            type: string
+          description: List of source mvenv names to merge
+        target:
+          type: string
+          description: Name of the target merged mvenv
+        delete_sources:
+          type: boolean
+          default: false
+          description: Whether to delete source mvenvs to reclaim disk space
+        repoint_apps:
+          type: boolean
+          default: true
+          description: Whether to update local installed apps bound to source mvenvs to target
+
+    MvenvMergeResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        target:
+          $ref: '#/components/schemas/MvenvRecord'
+        merged_sources:
+          type: array
+          items:
+            type: string
+        packages_installed:
+          type: integer
+        repointed_apps:
+          type: array
+          items:
+            type: string
+        reclaimed_bytes:
+          type: integer
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        status:
+          type: string
+          example: error
+        code:
+          type: integer
+          example: 400

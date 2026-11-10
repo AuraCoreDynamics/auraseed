@@ -4,10 +4,12 @@ Zero external runtime dependencies (Python standard library only).
 """
 import os
 import sys
+import json
 import shutil
 import platform
 import subprocess
 from pathlib import Path
+from datetime import datetime, timezone
 from typing import Optional, Callable, Dict, Any, List
 
 from auraseed.installer.models import AppManifest
@@ -57,10 +59,13 @@ class AppInstallerEngine:
         force: bool = False,
         create_launchers: bool = True,
         create_desktop_shortcut: bool = True,
-        progress_callback: Optional[Callable[[int, str], None]] = None
+        progress_callback: Optional[Callable[[int, str], None]] = None,
+        target_mvenv_name: Optional[str] = None,
+        use_shared_mvenv: bool = False
     ) -> Dict[str, Any]:
         """
         Executes the full installation lifecycle.
+        Supports both isolated standalone mvenvs and shared consolidated mvenvs to save disk space.
         """
         def update_progress(percent: int, msg: str):
             self.log(f"[{percent}%] {msg}")
@@ -77,23 +82,38 @@ class AppInstallerEngine:
 
         # 2. Resolve destination
         target_dest = (dest_dir or self.resolve_default_dest()).resolve()
+        target_dest.mkdir(parents=True, exist_ok=True)
         target_port = port or self.manifest.default_port or 8000
         app_root = self.resolve_app_root()
 
         update_progress(10, f"Target directory: {target_dest}")
 
         # 3. Create or reuse managed sovereign virtual environment
-        update_progress(20, "Creating sovereign virtual environment...")
-        mvenv_mgr = MvenvManager(root_path=target_dest.parent)
-        env_name = target_dest.name
+        if use_shared_mvenv and not target_mvenv_name:
+            target_mvenv_name = "shared-apps"
 
-        req = MvenvCreateRequest(
-            name=env_name,
-            target_dir=str(target_dest),
-            sovereign=True,
-            force=force
-        )
-        record = mvenv_mgr.create_venv(req)
+        if target_mvenv_name:
+            update_progress(20, f"Resolving shared virtual environment: {target_mvenv_name}...")
+            mvenv_mgr = MvenvManager()
+            record = mvenv_mgr.get_venv(target_mvenv_name)
+            if not record:
+                req = MvenvCreateRequest(name=target_mvenv_name, sovereign=True, force=False)
+                record = mvenv_mgr.create_venv(req)
+            env_name = target_mvenv_name
+            mvenv_root = Path(record.path).resolve()
+        else:
+            update_progress(20, "Creating sovereign virtual environment...")
+            mvenv_mgr = MvenvManager(root_path=target_dest.parent)
+            env_name = target_dest.name
+
+            req = MvenvCreateRequest(
+                name=env_name,
+                target_dir=str(target_dest),
+                sovereign=True,
+                force=force
+            )
+            record = mvenv_mgr.create_venv(req)
+            mvenv_root = target_dest
 
         python_exe = Path(record.python_path).resolve()
         pip_exe = Path(record.pip_path).resolve() if record.pip_path else None
@@ -167,7 +187,23 @@ class AppInstallerEngine:
         launchers = {}
         if create_launchers:
             update_progress(90, "Generating application launchers...")
-            launchers = self._generate_launchers(target_dest, python_exe, target_port)
+            launchers = self._generate_launchers(target_dest, python_exe, target_port, mvenv_root=mvenv_root)
+
+        # 8. Record local installation metadata
+        meta_file = target_dest / ".auraseed_app.json"
+        meta_data = {
+            "name": self.manifest.name,
+            "display_name": self.manifest.display_name,
+            "version": self.manifest.version,
+            "description": self.manifest.description,
+            "install_dir": str(target_dest),
+            "mvenv_name": env_name,
+            "mvenv_path": str(mvenv_root),
+            "python_path": str(python_exe),
+            "port": target_port,
+            "installed_at": datetime.now(timezone.utc).isoformat()
+        }
+        meta_file.write_text(json.dumps(meta_data, indent=2), encoding="utf-8")
 
         if create_desktop_shortcut and is_windows:
             update_progress(95, "Creating desktop shortcut...")
@@ -181,12 +217,20 @@ class AppInstallerEngine:
             "display_name": self.manifest.display_name,
             "version": self.manifest.version,
             "install_dir": str(target_dest),
+            "mvenv_name": env_name,
+            "mvenv_path": str(mvenv_root),
             "python_path": str(python_exe),
             "port": target_port,
             "launchers": launchers
         }
 
-    def _generate_launchers(self, target_dest: Path, python_exe: Path, port: int) -> Dict[str, str]:
+    def _generate_launchers(
+        self,
+        target_dest: Path,
+        python_exe: Path,
+        port: int,
+        mvenv_root: Optional[Path] = None
+    ) -> Dict[str, str]:
         """
         Creates ready-to-run launcher scripts in the installation directory.
         """
@@ -198,8 +242,10 @@ class AppInstallerEngine:
         raw_cmd = self.manifest.entrypoint_command or f"{app_name} --port {{port}}"
         cmd_str = raw_cmd.format(port=port, dest=str(target_dest))
 
+        venv_dir = mvenv_root or (target_dest if (target_dest / "Scripts").exists() or (target_dest / "bin").exists() else python_exe.parent.parent)
+
         if is_windows:
-            scripts_dir = target_dest / "Scripts"
+            scripts_dir = venv_dir / "Scripts"
             activate_bat = scripts_dir / "activate.bat"
 
             bat_file = target_dest / f"run-{app_name}.bat"
@@ -225,8 +271,9 @@ class AppInstallerEngine:
             ps1_file.write_text(ps1_content, encoding="utf-8")
             launchers["ps1"] = str(ps1_file)
         else:
+            bin_dir = venv_dir / "bin"
             sh_file = target_dest / f"run-{app_name}.sh"
-            activate_sh = target_dest / "bin" / "activate"
+            activate_sh = bin_dir / "activate"
             sh_content = (
                 "#!/usr/bin/env sh\n"
                 f"cd \"{target_dest}\"\n"

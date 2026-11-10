@@ -57,6 +57,8 @@ class MvenvCreateRequest:
     force: bool = False
     target_dir: Optional[str] = None
     tags: Optional[Dict[str, Any]] = None
+    python_spec: Optional[str] = None
+    adapter: str = "all"
 
 
 @dataclass

@@ -22,11 +22,18 @@ class MvenvCatalog:
     def _now_iso(self) -> str:
         return datetime.now(timezone.utc).isoformat()
 
-    def get_record(self, name: str) -> Optional[MvenvRecord]:
-        """
-        Retrieves a record for the named mvenv, reading .mvenv.json if present.
-        """
-        env_dir = self.root_dir / name
+    def _read_catalog_index(self) -> Dict[str, dict]:
+        if not self.catalog_file.exists():
+            return {}
+        try:
+            data = json.loads(self.catalog_file.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+        return {}
+
+    def _load_record_from_dir(self, name: str, env_dir: Path) -> Optional[MvenvRecord]:
         if not env_dir.is_dir():
             return None
 
@@ -35,11 +42,15 @@ class MvenvCatalog:
             try:
                 data = json.loads(meta_file.read_text(encoding="utf-8"))
                 record = MvenvRecord.from_dict(data)
+                if not record.name:
+                    record.name = name
                 record.path = str(env_dir)
                 if not record.python_path:
-                    record.python_path = str(self._find_python_exe(env_dir))
+                    py_exe = self._find_python_exe(env_dir)
+                    record.python_path = str(py_exe) if py_exe else ""
                 if not record.pip_path:
-                    record.pip_path = str(self._find_pip_exe(env_dir))
+                    pip_exe = self._find_pip_exe(env_dir)
+                    record.pip_path = str(pip_exe) if pip_exe else ""
                 return record
             except Exception:
                 pass
@@ -65,19 +76,53 @@ class MvenvCatalog:
 
         return None
 
+    def get_record(self, name: str) -> Optional[MvenvRecord]:
+        """
+        Retrieves a record for the named mvenv, reading .mvenv.json if present.
+        Checks both default children under root_dir and custom target_dir entries in .catalog.json.
+        """
+        rec = self._load_record_from_dir(name, self.root_dir / name)
+        if rec is not None:
+            return rec
+
+        index = self._read_catalog_index()
+        entry = index.get(name)
+        if isinstance(entry, dict) and entry.get("path"):
+            return self._load_record_from_dir(name, Path(entry["path"]))
+
+        return None
+
     def list_records(self) -> List[MvenvRecord]:
         """
         Scans root_dir and returns all discovered and cataloged mvenv records.
         """
         records: List[MvenvRecord] = []
-        if not self.root_dir.exists():
-            return records
+        seen_names = set()
+        seen_paths = set()
 
-        for child in sorted(self.root_dir.iterdir()):
-            if child.is_dir() and not child.name.startswith("."):
-                rec = self.get_record(child.name)
-                if rec is not None:
-                    records.append(rec)
+        if self.root_dir.exists():
+            for child in sorted(self.root_dir.iterdir()):
+                if child.is_dir() and not child.name.startswith("."):
+                    rec = self._load_record_from_dir(child.name, child)
+                    if rec is not None:
+                        records.append(rec)
+                        seen_names.add(rec.name)
+                        seen_paths.add(str(Path(rec.path).resolve()).lower())
+
+        for name, entry in self._read_catalog_index().items():
+            if name in seen_names or not isinstance(entry, dict):
+                continue
+            entry_path = entry.get("path")
+            if not entry_path:
+                continue
+            resolved_str = str(Path(entry_path).resolve()).lower()
+            if resolved_str in seen_paths:
+                continue
+            rec = self._load_record_from_dir(name, Path(entry_path))
+            if rec is not None:
+                records.append(rec)
+                seen_names.add(rec.name)
+                seen_paths.add(resolved_str)
 
         return records
 
