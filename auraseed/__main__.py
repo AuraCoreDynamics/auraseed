@@ -615,6 +615,8 @@ def handle_serve_cli(args: List[str]) -> int:
 
 
 def handle_p2p_cli(args: List[str]) -> int:
+    from auraseed.grid.peer_transfer import P2PVenvClient
+
     parser = argparse.ArgumentParser(prog="auraseed p2p", description="P2P venv transfer between nodes.")
     parser.add_argument("action", choices=["pull", "push"], help="Pull or push bundle")
     parser.add_argument("peer_url", help="Peer node URL")
@@ -640,6 +642,98 @@ def handle_p2p_cli(args: List[str]) -> int:
     return 1
 
 
+def handle_cleanup_cli(args: List[str]) -> int:
+    from auraseed.lifecycle import cleanup_auraseed_user, cleanup_legacy_app
+
+    parser = argparse.ArgumentParser(
+        prog="auraseed cleanup",
+        description="Clean up legacy AuraSeed apps or completely remove AuraSeed user/OS state.",
+    )
+    sub = parser.add_subparsers(dest="cleanup_cmd", required=True)
+
+    p_app = sub.add_parser("app", help="Delete a legacy AuraSeed-installed application and its state")
+    p_app.add_argument("name", help="Legacy application name (e.g. bijou)")
+    p_app.add_argument("--keep-mvenv", action="store_true", help="Preserve any matching mvenv")
+    p_app.add_argument("--no-registry", action="store_true", help="Skip OS registry/env cleanup")
+    p_app.add_argument("--json", action="store_true", help="Output as JSON")
+
+    p_self = sub.add_parser("self", help="Completely remove AuraSeed state, registry keys, env vars, and optional package")
+    p_self.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
+    p_self.add_argument("--remove-package", action="store_true", help="Also pip-uninstall the auraseed Python package")
+    p_self.add_argument("--purge-bootstrapped-python", action="store_true", help="Also delete AuraSeedBootstrapped registry entries")
+    p_self.add_argument("--no-registry", action="store_true", help="Skip OS registry/env cleanup")
+    p_self.add_argument("--json", action="store_true", help="Output as JSON")
+
+    parsed = parser.parse_args(args)
+    if parsed.cleanup_cmd == "app":
+        report = cleanup_legacy_app(
+            parsed.name,
+            remove_mvenv=not parsed.keep_mvenv,
+            clean_os_registry=not parsed.no_registry,
+        )
+        if parsed.json:
+            print(json.dumps(report, indent=2))
+        else:
+            print(f"[AuraSeed] Cleaned app '{parsed.name}': {len(report['removed_paths'])} paths removed.")
+        return 0
+
+    if parsed.cleanup_cmd == "self":
+        if not parsed.yes and sys.stdin.isatty():
+            reply = input("[AuraSeed] Remove all AuraSeed apps, mvenvs, user dirs, env vars, and registry keys? [y/N]: ").strip().lower()
+            if reply not in ("y", "yes"):
+                print("[AuraSeed] Cleanup cancelled.")
+                return 1
+        report = cleanup_auraseed_user(
+            remove_package=bool(parsed.remove_package),
+            purge_bootstrapped_python=bool(parsed.purge_bootstrapped_python),
+            clean_os_registry=not parsed.no_registry,
+        )
+        if parsed.json:
+            print(json.dumps(report, indent=2))
+        else:
+            print(
+                f"[AuraSeed] Full cleanup complete: apps={len(report['removed_apps'])}, "
+                f"mvenvs={len(report['removed_mvenvs'])}, paths={len(report['removed_paths'])}, "
+                f"registry={len(report['cleaned_registry'])}, package_removed={report['package_removed']}"
+            )
+        return 0
+
+    return 1
+
+
+def handle_install_self_cli(args: List[str]) -> int:
+    from auraseed.lifecycle import install_auraseed_standalone
+
+    parser = argparse.ArgumentParser(
+        prog="auraseed install-self",
+        description="Install AuraSeed standalone into an isolated user-space virtual environment.",
+    )
+    parser.add_argument("--dest", default=None, help="Target standalone installation directory")
+    parser.add_argument("--source", default=None, help="Source directory to install from")
+    parser.add_argument("--wheelhouse", default=None, help="Offline wheelhouse directory")
+    parser.add_argument("--base-python", default=None, help="Base Python executable to seed from")
+    parser.add_argument("--editable", action="store_true", help="Install in editable mode")
+    parser.add_argument("--no-register", action="store_true", help="Skip HKCU registry and env var registration")
+    parser.add_argument("--add-to-path", action="store_true", help="Add standalone bin directory to HKCU PATH")
+    parser.add_argument("--json", action="store_true", help="Output as JSON")
+
+    parsed = parser.parse_args(args)
+    report = install_auraseed_standalone(
+        dest_dir=Path(parsed.dest) if parsed.dest else None,
+        source_path=Path(parsed.source) if parsed.source else None,
+        wheelhouse_dir=Path(parsed.wheelhouse) if parsed.wheelhouse else None,
+        base_python=parsed.base_python,
+        register_os=not parsed.no_register,
+        add_to_path=bool(parsed.add_to_path),
+        editable=bool(parsed.editable),
+    )
+    if parsed.json:
+        print(json.dumps(report, indent=2))
+    else:
+        print(f"[AuraSeed] Installed standalone -> {report['install_dir']} (python={report['python_path']})")
+    return 0
+
+
 def _handle_migrated_app_command(cmd: str) -> int:
     guidance = {
         "install-app": "aurasprout install",
@@ -660,6 +754,15 @@ def _handle_migrated_app_command(cmd: str) -> int:
 
 
 def main() -> int:
+    if len(sys.argv) > 1:
+        early_cmd = sys.argv[1].lower()
+        if early_cmd == "cleanup":
+            return handle_cleanup_cli(sys.argv[2:])
+        if early_cmd in ("uninstall", "uninstall-self"):
+            return handle_cleanup_cli(["self", *sys.argv[2:]])
+        if early_cmd == "install-self":
+            return handle_install_self_cli(sys.argv[2:])
+
     from auraseed.provision.config_manager import apply_user_configs
     quiet_mode = ("--json" in sys.argv or "--mcp" in sys.argv)
     apply_user_configs(auto_yes=quiet_mode, quiet=quiet_mode)

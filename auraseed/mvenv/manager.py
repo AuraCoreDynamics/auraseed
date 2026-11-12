@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import sys
@@ -164,6 +165,7 @@ class MvenvManager:
             use_cache=use_cache,
             required_modules=required_modules,
             required_packages=required_packages,
+            cache=self._discovery_cache(),
         )
         env_list = list(results.values())
 
@@ -200,6 +202,7 @@ class MvenvManager:
             if local_appdata:
                 candidate_reg_dirs.append(Path(local_appdata) / "auraseed")
         elif sys_plat == "darwin":
+            candidate_reg_dirs.append(Path.home() / ".config" / "auraseed")
             candidate_reg_dirs.append(Path.home() / "Library" / "Application Support" / "auraseed")
         else:
             xdg_cfg = os.environ.get("XDG_CONFIG_HOME")
@@ -405,6 +408,17 @@ class MvenvManager:
             "venv_path": str(venv_dir)
         }
 
+    def _discovery_cache(self):
+        from auraseed.discovery.cache import DiscoveryCache
+
+        env_cache = os.environ.get("AURASEED_DISCOVERY_CACHE", "").strip()
+        if env_cache:
+            return DiscoveryCache(Path(env_cache))
+        default_user_mvenvs = (Path.home() / ".auraseed" / "mvenvs").resolve()
+        if self.root_path.resolve() != default_user_mvenvs:
+            return DiscoveryCache(self.root_path / ".discovery_cache.json")
+        return None
+
     def _discover_best_interpreter(
         self,
         adapter: str = "all",
@@ -416,9 +430,12 @@ class MvenvManager:
         """
         norm_adapter = (adapter or "all").strip().lower()
         manager = self._build_discovery_manager(norm_adapter)
+        active_cache = self._discovery_cache()
 
         if python_spec:
-            env_list = list(manager.run_discovery(probe_capabilities=True, use_cache=True).values())
+            env_list = list(
+                manager.run_discovery(probe_capabilities=True, use_cache=True, cache=active_cache).values()
+            )
             if not env_list:
                 if norm_adapter != "all":
                     raise ValueError(f"No Python interpreters discovered for adapter '{adapter}'.")
@@ -432,7 +449,7 @@ class MvenvManager:
                 )
             return selected
 
-        best = manager.select_best(probe_capabilities=True, use_cache=True)
+        best = manager.select_best(probe_capabilities=True, use_cache=True, cache=active_cache)
         if best is not None:
             return best
 
@@ -601,6 +618,27 @@ class MvenvManager:
         self.catalog.save_record(rec)
         return rec
 
+    def prune_stale(self, hours: float = 24.0) -> List[str]:
+        """Remove orphaned catalog records whose directories are missing and stale bundle tarballs."""
+        pruned: List[str] = []
+        for rec in list(self.list_venvs()):
+            env_dir = Path(rec.path)
+            if not env_dir.exists() or not env_dir.is_dir():
+                if self.catalog.remove_record(rec.name):
+                    pruned.append(rec.name)
+
+        bundles_dir = self.root_path / ".bundles"
+        if bundles_dir.is_dir() and hours >= 0:
+            cutoff_ts = datetime.now(timezone.utc).timestamp() - (float(hours) * 3600.0)
+            for item in bundles_dir.glob("*.tar.gz"):
+                try:
+                    if item.stat().st_mtime < cutoff_ts:
+                        item.unlink()
+                        pruned.append(item.name)
+                except OSError:
+                    pass
+        return pruned
+
     def delete_venv(self, name: str) -> bool:
         """
         Deletes a managed virtual environment from disk and unregisters it.
@@ -735,7 +773,7 @@ class MvenvManager:
 
         # Write manifest into venv before bundling
         manifest_path = env_dir / "bundle.manifest.json"
-        manifest_path.write_text(meta.to_dict().__repr__(), encoding="utf-8")
+        manifest_path.write_text(json.dumps(meta.to_dict(), indent=2), encoding="utf-8")
 
         with tarfile.open(output_path, "w:gz") as tar:
             tar.add(env_dir, arcname=name)

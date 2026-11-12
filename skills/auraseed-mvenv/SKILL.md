@@ -31,10 +31,11 @@ Scan both base Python interpreters and existing `mvenv`s before creating a new e
 
 ```bash
 # Discover both existing mvenvs (catalog + OS registry) and host Python interpreters
-python -m auraseed discover --json
+python -m auraseed discover --probe --json
 
-# Discover via the mvenv namespace, optionally filtering by adapter (arcpro, qgis, windows_registry, linux_system, macos_system)
-python -m auraseed mvenv discover --adapter all --json
+# Discover via the mvenv namespace, optionally filtering by adapter
+# (all, windows_registry, linux_system, macos_system, toolchains, embedded_apps, arcpro, qgis)
+python -m auraseed mvenv discover --adapter all --probe --json
 
 # Fast listing of cataloged mvenvs in the active root only
 python -m auraseed mvenv list --json

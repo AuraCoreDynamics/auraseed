@@ -135,7 +135,8 @@ class AuraSeedApiHandler(BaseHTTPRequestHandler):
         if path == "/api/v1/discovery":
             adapter = query.get("adapter", ["all"])[0]
             probe = query.get("probe", ["false"])[0].lower() in ("1", "true", "yes")
-            use_cache = query.get("cache", ["true"])[0].lower() not in ("0", "false", "no")
+            use_cache_vals = query.get("cache") or query.get("use_cache") or ["true"]
+            use_cache = use_cache_vals[0].lower() not in ("0", "false", "no")
             try:
                 envs = self.manager.discover_interpreters(
                     adapter=adapter,

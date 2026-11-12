@@ -17,19 +17,19 @@ Example CI/CD execution:
 git clone https://github.com/AuraCoreDynamics/auraseed.git
 
 # Execute the native bootstrapper
-./auraseed/auraseed.sh --target-adapter arcpro --dest ~/.auraseed/venvs/arcpro-sovereign
+./auraseed/auraseed.sh --adapter arcpro --dest ~/.auraseed/venvs/arcpro-sovereign
 ```
 
 ### Step 2: Interpreting the Registry
 
-AuraSeed automatically exposes the generated virtual environments to the host OS. 
-If you are developing a downstream application (like an IDE plugin or a pipeline runner), you can reliably discover AuraSeed environments by reading the central manifest.
+AuraSeed automatically exposes the generated virtual environments to the host OS.
+If you are developing a downstream application (like an IDE plugin or a pipeline runner), you can discover AuraSeed environments from the host OS registry or `mvenv` catalog:
 
-- **Windows**: `%LOCALAPPDATA%\auraseed\environments.json`
+- **Windows**: `HKCU\Software\Python\PythonCore\AuraSeed\Environments\<name>` (PEP 514) and `HKCU\Environment\AURASEED_ENV_<NAME>`
 - **Linux**: `~/.config/auraseed/environments.json`
-- **macOS**: `~/Library/Application Support/auraseed/environments.json`
+- **macOS**: `~/.config/auraseed/environments.json` (and `MvenvManager.discover_venvs` also scans `~/Library/Application Support/auraseed/environments.json`)
 
-Additionally, on Windows, AuraSeed writes PEP 514 compliant registry keys under `HKCU\Software\Python\PythonCore\AuraSeed\Environments`. PyCharm, VS Code, and Visual Studio will automatically detect these environments without any configuration.
+For `mvenv`-managed environments, `MvenvManager` stores `.catalog.json` inside the active mvenv root (`AURASEED_MVENV_ROOT`, `%LOCALAPPDATA%\AuraGrid\mvenvs`, or `~/.auraseed/mvenvs`) and caches probed host interpreters in `<root>/.discovery_cache.json` (or `~/.auraseed/discovery_cache.json` / `AURASEED_DISCOVERY_CACHE`).
 
 ### Step 3: Triggering an Audit
 

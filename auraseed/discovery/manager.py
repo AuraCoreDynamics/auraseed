@@ -75,6 +75,7 @@ class DiscoveryManager:
         prefer_packages: Optional[List[str]] = None,
         probe_capabilities: bool = True,
         use_cache: bool = True,
+        cache: Optional[DiscoveryCache] = None,
     ) -> Optional[DiscoveredEnvironment]:
         """
         Discovers, probes, and deterministically selects the highest-scoring runtime.
@@ -83,6 +84,7 @@ class DiscoveryManager:
             probe_capabilities=probe_capabilities,
             use_cache=use_cache,
             required_packages=prefer_packages,
+            cache=cache,
         )
         strategy = CapabilityScoreStrategy(
             min_version=min_version,

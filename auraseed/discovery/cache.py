@@ -22,7 +22,15 @@ class DiscoveryCache:
     """
 
     def __init__(self, cache_path: Optional[Path] = None) -> None:
-        self.cache_path = Path(cache_path) if cache_path else (Path.home() / ".auraseed" / "discovery_cache.json")
+        if cache_path is not None:
+            self.cache_path = Path(cache_path)
+        else:
+            env_cache = os.environ.get("AURASEED_DISCOVERY_CACHE", "").strip()
+            self.cache_path = (
+                Path(env_cache)
+                if env_cache
+                else (Path.home() / ".auraseed" / "discovery_cache.json")
+            )
         self._lock = threading.Lock()
 
     @staticmethod

@@ -63,7 +63,23 @@ python -m auraseed mvenv merge env-a env-b --target shared-env --delete-sources
 # Export / import portable bundles (Tar-Slip & symlink validated)
 python -m auraseed mvenv export data-science --out data-science.tar.gz
 python -m auraseed mvenv import data-science.tar.gz --name data-science
+
+# Peer-to-peer mvenv transfer with another AuraSeed HTTP node
+python -m auraseed p2p push http://127.0.0.1:7099 data-science
+python -m auraseed p2p pull http://127.0.0.1:7099 data-science
+
+# Standalone lifecycle & full user cleanup (apps, mvenvs, registry, HKCU env, PATH)
+python -m auraseed install-self --add-to-path --json
+python -m auraseed cleanup app <legacy_app_name> --json
+python -m auraseed cleanup self --yes --json
 ```
+
+### Key Environment Variables
+- `AURASEED_MVENV_ROOT` / `AURAGRID_MVENV_ROOT`: Override the active mvenv catalog root (discovery cache defaults to `<root>/.discovery_cache.json` when using a custom root, or `~/.auraseed/discovery_cache.json`).
+- `AURASEED_DISCOVERY_CACHE`: Explicit path override for the interpreter discovery cache file.
+- `AURASEED_BIND_HOST` / `AURASEED_PORT` / `AURASEED_URL`: Server bind host/port (defaults `127.0.0.1:7099`) and `AuraSeedClient` target URL.
+- `AURASEED_HOME` / `AURASEED_STANDALONE_DIR`: Standalone installation paths set on Windows user environment.
+- `AURASEED_BOOTSTRAP_CONFIG` / `AURASEED_DEBUG`: Unattended `bootstrap.json` override and HTTP request debug logging (`=1`).
 
 ## Agent Skill (`skills/auraseed-mvenv`)
 
@@ -87,7 +103,7 @@ The server API adheres to [`openapi.yaml`](auraseed/openapi.yaml) and [`openapi.
 - `POST /mcp` — Streamable HTTP Model Context Protocol (MCP) JSON-RPC 2.0 endpoint
 - `GET /health` — Service health probe, runtime info, and mvenv counts
 - `GET /api/v1/openapi.json` / `/api/v1/openapi.yaml` — OpenAPI 3.0.3 specification
-- `GET /api/v1/discovery` — Discover host Python runtimes (`?probe=true`, `?use_cache=true`, `?adapter=all`)
+- `GET /api/v1/discovery` — Discover host Python runtimes (`?probe=true`, `?cache=true` / `?use_cache=true`, `?adapter=all`)
 - `GET /api/v1/mvenv` — List all cataloged virtual environments
 - `GET /api/v1/mvenv/{name}` — Retrieve metadata for a specific environment
 - `POST /api/v1/mvenv` — Create and catalog a new environment

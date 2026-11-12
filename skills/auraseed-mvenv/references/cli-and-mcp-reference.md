@@ -19,11 +19,11 @@ AuraSeed separates responsibilities into three cleanly aligned layers:
 
 | Command | Key Flags | Purpose |
 | :--- | :--- | :--- |
-| `auraseed discover` | `--adapter`, `--interpreters-only`, `--mvenvs-only`, `--no-registry`, `--root`, `--json` | Discover host Python interpreters and existing mvenvs. |
-| `auraseed mvenv discover` | `--adapter`, `--interpreters`, `--interpreters-only`, `--mvenvs-only`, `--no-registry`, `--root`, `--json` | Same discovery workflow under the `mvenv` namespace. |
+| `auraseed discover` | `--adapter`, `--probe`, `--no-cache`, `--require-module`, `--require-package`, `--interpreters-only`, `--mvenvs-only`, `--no-registry`, `--root`, `--json` | Discover host Python interpreters and existing mvenvs. |
+| `auraseed mvenv discover` | `--adapter`, `--probe`, `--no-cache`, `--require-module`, `--require-package`, `--interpreters`, `--interpreters-only`, `--mvenvs-only`, `--no-registry`, `--root`, `--json` | Same discovery workflow under the `mvenv` namespace. |
 | `auraseed mvenv list` | `--root`, `--json` | List mvenvs cataloged in the active `--root` (`AURASEED_MVENV_ROOT` or default). |
 
-Valid `--adapter` values: `all`, `windows_registry`, `linux_system`, `macos_system`, `arcpro`, `qgis`.
+Valid `--adapter` values: `all`, `windows_registry`, `linux_system`, `macos_system`, `toolchains`, `embedded_apps`, `arcpro`, `qgis`.
 
 ### Creation & Packages
 
@@ -45,6 +45,10 @@ Valid `--adapter` values: `all`, `windows_registry`, `linux_system`, `macos_syst
 | `auraseed mvenv export <name>` | `--out`, `--root`, `--json` | Export portable `.tar.gz` bundle. |
 | `auraseed mvenv import <bundle>` | `--name`, `--force`, `--root`, `--json` | Import a `.tar.gz` mvenv bundle. |
 | `auraseed mvenv delete <name>` | `--root`, `--json` | Remove an mvenv directory and catalog record. |
+| `auraseed p2p {pull,push} <url> <name>` | `--root` | Transfer `.tar.gz` mvenv bundles with a peer AuraSeed HTTP server. |
+| `auraseed install-self` | `--dest`, `--source`, `--wheelhouse`, `--base-python`, `--editable`, `--no-register`, `--add-to-path`, `--json` | Install AuraSeed standalone into an isolated user-space venv. |
+| `auraseed cleanup app <name>` | `--keep-mvenv`, `--no-registry`, `--json` | Remove a legacy AuraSeed-deployed app and its OS registry/env keys. |
+| `auraseed cleanup self` | `--yes`, `--remove-package`, `--purge-bootstrapped-python`, `--no-registry`, `--json` | Full user-account cleanup of AuraSeed data, mvenvs, registry, and env vars. |
 
 ---
 

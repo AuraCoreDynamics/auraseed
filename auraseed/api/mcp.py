@@ -54,7 +54,10 @@ class AuraSeedMcpServer:
                     "properties": {
                         "adapter": {
                             "type": "string",
-                            "description": "Discovery adapter filter: all, windows_registry, linux_system, macos_system, arcpro, qgis.",
+                            "description": (
+                                "Discovery adapter filter: all, windows_registry, linux_system, "
+                                "macos_system, toolchains, embedded_apps, arcpro, qgis."
+                            ),
                             "default": "all"
                         },
                         "interpreters_only": {
