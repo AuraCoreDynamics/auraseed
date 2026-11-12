@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Iterator, List, Optional, Set
 from auraseed.models import DiscoveredEnvironment
 from auraseed.discovery.base import BaseDiscoverer
+from auraseed.discovery.prober import iter_env_search_paths, sanitize_candidate_path
 
 class ArcProDiscoverer(BaseDiscoverer):
     """
@@ -51,38 +52,29 @@ class ArcProDiscoverer(BaseDiscoverer):
                 except OSError:
                     pass
 
-        extra_env = os.environ.get("AURASEED_EXTRA_SEARCH_PATHS")
-        if extra_env:
-            for piece in extra_env.split(os.pathsep):
-                piece_p = Path(piece.strip())
-                if piece_p.exists():
-                    candidates.append(piece_p)
+        candidates.extend(iter_env_search_paths(("AURASEED_EXTRA_SEARCH_PATHS",)))
 
         # 1. Environment variables
-        for env_var in ("ARCGISHOME", "ESRI_CONDA_ENVS", "ARCGIS_PRO_PYTHON"):
-            val = os.environ.get(env_var)
-            if val:
-                p = Path(val)
-                if p.is_file() and p.name.lower() == "python.exe":
-                    candidates.append(p.parent)
-                elif p.is_dir():
-                    candidates.append(p)
-                    # check sub-envs
-                    envs_sub = p / "envs"
-                    if envs_sub.exists():
-                        candidates.extend([c for c in envs_sub.iterdir() if c.is_dir()])
+        for p in iter_env_search_paths(("ARCGISHOME", "ESRI_CONDA_ENVS", "ARCGIS_PRO_PYTHON")):
+            if p.is_file() and p.name.lower() == "python.exe":
+                candidates.append(p.parent)
+            elif p.is_dir():
+                candidates.append(p)
+                envs_sub = p / "envs"
+                if envs_sub.exists():
+                    candidates.extend([c for c in envs_sub.iterdir() if c.is_dir()])
 
         # 2. Well-known standard paths
-        program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
-        local_app_data = os.environ.get("LOCALAPPDATA", "")
-        program_data = os.environ.get("ProgramData", r"C:\ProgramData")
+        program_files = sanitize_candidate_path(os.environ.get("ProgramFiles", r"C:\Program Files")) or Path(r"C:\Program Files")
+        local_app_path = sanitize_candidate_path(os.environ.get("LOCALAPPDATA", "")) if os.environ.get("LOCALAPPDATA") else None
+        program_data = sanitize_candidate_path(os.environ.get("ProgramData", r"C:\ProgramData")) or Path(r"C:\ProgramData")
 
         standard_env_dirs = [
-            Path(program_files) / "ArcGIS" / "Pro" / "bin" / "Python" / "envs",
-            Path(program_data) / "ESRI" / "conda" / "envs",
+            program_files / "ArcGIS" / "Pro" / "bin" / "Python" / "envs",
+            program_data / "ESRI" / "conda" / "envs",
         ]
-        if local_app_data:
-            standard_env_dirs.append(Path(local_app_data) / "ESRI" / "conda" / "envs")
+        if local_app_path is not None:
+            standard_env_dirs.append(local_app_path / "ESRI" / "conda" / "envs")
 
         # User home conda envs
         home_conda = Path.home() / ".conda" / "envs"

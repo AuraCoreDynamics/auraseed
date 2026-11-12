@@ -1,30 +1,35 @@
-import sys
-import json
 import argparse
+import json
+import os
 import platform
 import subprocess
+import sys
 from pathlib import Path
 from typing import List, Optional
 
+from auraseed.api.mcp import AuraSeedMcpServer
+from auraseed.api.server import run_api_server
+from auraseed.discovery.adapters.arcpro import ArcProDiscoverer
+from auraseed.discovery.adapters.embedded import EmbeddedAppDiscoverer
+from auraseed.discovery.adapters.qgis import QgisDiscoverer
+from auraseed.discovery.adapters.toolchains import ToolchainDiscoverer
 from auraseed.discovery.manager import DiscoveryManager
-from auraseed.discovery.os.windows import WindowsDiscoverer
 from auraseed.discovery.os.linux import LinuxDiscoverer
 from auraseed.discovery.os.macos import MacOSDiscoverer
-from auraseed.discovery.adapters.arcpro import ArcProDiscoverer
-from auraseed.discovery.adapters.qgis import QgisDiscoverer
-
-from auraseed.governance.rules import LatestVersionStrategy, VersionSpecStrategy, InteractiveSelectionStrategy
-from auraseed.seed.sovereign import SovereignVenvEngine
-from auraseed.seed.isolation import HostIsolationEngine
-from auraseed.seed.artifacts import write_seed_manifest, generate_launchers
-from auraseed.models import SeedManifest
-
+from auraseed.discovery.os.windows import WindowsDiscoverer
+from auraseed.governance.rules import (
+    InteractiveSelectionStrategy,
+    LatestVersionStrategy,
+    VersionSpecStrategy,
+    parse_semver,
+)
+from auraseed.grid.mas_runner import run_as_mas
+from auraseed.models import DiscoveredEnvironment, SeedManifest
 from auraseed.mvenv.manager import MvenvManager
 from auraseed.mvenv.models import MvenvCreateRequest
-from auraseed.api.server import run_api_server
-from auraseed.api.mcp import AuraSeedMcpServer
-from auraseed.grid.mas_runner import run_as_mas
-from auraseed.grid.peer_transfer import P2PVenvClient
+from auraseed.seed.artifacts import generate_launchers, write_seed_manifest
+from auraseed.seed.isolation import HostIsolationEngine
+from auraseed.seed.sovereign import SovereignVenvEngine
 
 
 def _split_exec_args(raw_args: List[str]):
@@ -69,8 +74,20 @@ def _split_exec_args(raw_args: List[str]):
     return pre, []
 
 
-def _discovered_env_to_dict(env) -> dict:
-    return {
+def _parse_csv_flags(raw_values: Optional[List[str]]) -> Optional[List[str]]:
+    if not raw_values:
+        return None
+    items: List[str] = []
+    for raw in raw_values:
+        for part in raw.split(","):
+            cleaned = part.strip()
+            if cleaned and cleaned not in items:
+                items.append(cleaned)
+    return items or None
+
+
+def _discovered_env_to_dict(env: DiscoveredEnvironment) -> dict:
+    payload = {
         "id": env.id,
         "name": env.name,
         "executable": str(env.executable),
@@ -79,6 +96,9 @@ def _discovered_env_to_dict(env) -> dict:
         "site_packages": [str(p) for p in (env.site_packages or [])],
         "metadata": env.metadata or {},
     }
+    if env.capabilities is not None:
+        payload["capabilities"] = env.capabilities.to_dict()
+    return payload
 
 
 def _print_discovery_payload(
@@ -89,12 +109,30 @@ def _print_discovery_payload(
     include_registry: bool = True,
     as_json: bool = False,
     interpreters_focus: bool = False,
+    probe: bool = False,
+    use_cache: bool = True,
+    required_modules: Optional[List[str]] = None,
+    required_packages: Optional[List[str]] = None,
 ) -> int:
     interpreters = []
     mvenvs = []
 
     if not mvenvs_only:
-        envs = mgr.discover_interpreters(adapter=adapter)
+        envs = mgr.discover_interpreters(
+            adapter=adapter,
+            probe_capabilities=probe,
+            use_cache=use_cache,
+            required_modules=required_modules,
+            required_packages=required_packages,
+        )
+        if probe:
+            envs.sort(
+                key=lambda e: (
+                    float(e.capabilities.composite_score) if e.capabilities else 0.0,
+                    parse_semver(e.version),
+                ),
+                reverse=True,
+            )
         interpreters = [_discovered_env_to_dict(e) for e in envs]
 
     if not interpreters_only:
@@ -124,7 +162,9 @@ def _print_discovery_payload(
             print()
         print(f"Discovered Base Python Interpreters ({len(interpreters)}, adapter={adapter}):")
         for e in interpreters:
-            print(f"  - {e['name']} (Python {e['version']}, source={e['source_type']})")
+            caps = e.get("capabilities")
+            score_suffix = f", score={caps['composite_score']:.4f}" if caps else ""
+            print(f"  - {e['name']} (Python {e['version']}, source={e['source_type']}{score_suffix})")
             print(f"    Executable: {e['executable']}")
 
     return 0
@@ -135,10 +175,26 @@ def handle_discover_cli(args: List[str]) -> int:
         prog="auraseed discover",
         description="Discover host Python interpreters and existing AuraSeed managed virtual environments."
     )
-    parser.add_argument("--adapter", default="all", help="Interpreter discovery adapter filter (all, windows_registry, linux_system, macos_system, arcpro, qgis)")
+    parser.add_argument(
+        "--adapter",
+        default="all",
+        help="Interpreter discovery adapter filter (all, windows_registry, linux_system, macos_system, toolchains, embedded_apps, arcpro, qgis)",
+    )
     parser.add_argument("--interpreters-only", action="store_true", help="Only scan host base interpreters")
     parser.add_argument("--mvenvs-only", action="store_true", help="Only scan managed virtual environments")
     parser.add_argument("--no-registry", action="store_true", help="Skip global OS registry manifests and default ~/.auraseed directories")
+    parser.add_argument("--probe", action="store_true", help="Probe runtime capabilities, ABI tags, and composite scores")
+    parser.add_argument("--no-cache", action="store_true", help="Bypass persistent ~/.auraseed/discovery_cache.json when probing")
+    parser.add_argument(
+        "--require-module",
+        action="append",
+        help="Required importable stdlib/site module(s), comma-separated (e.g. ssl,sqlite3)",
+    )
+    parser.add_argument(
+        "--require-package",
+        action="append",
+        help="Preferred preinstalled package(s), comma-separated (e.g. numpy,osgeo)",
+    )
     parser.add_argument("--root", type=str, help="Custom mvenv root directory")
     parser.add_argument("--json", action="store_true", help="Output as JSON")
 
@@ -152,22 +208,31 @@ def handle_discover_cli(args: List[str]) -> int:
         mvenvs_only=parsed.mvenvs_only,
         include_registry=not parsed.no_registry,
         as_json=parsed.json,
+        probe=bool(parsed.probe),
+        use_cache=not parsed.no_cache,
+        required_modules=_parse_csv_flags(parsed.require_module),
+        required_packages=_parse_csv_flags(parsed.require_package),
     )
 
 
-
-def register_platform_strategies(manager: DiscoveryManager, adapter: str):
+def register_platform_strategies(manager: DiscoveryManager, adapter: str) -> None:
     sys_plat = platform.system().lower()
-    if sys_plat == "windows" and adapter in ("all", "windows_registry"):
+    norm_adapter = (adapter or "all").strip().lower()
+    if sys_plat == "windows" and norm_adapter in ("all", "windows_registry"):
         manager.register_strategy(WindowsDiscoverer())
-    elif sys_plat == "linux" and adapter in ("all", "linux_system"):
+    elif sys_plat == "linux" and norm_adapter in ("all", "linux_system"):
         manager.register_strategy(LinuxDiscoverer())
-    elif sys_plat == "darwin" and adapter in ("all", "macos_system"):
+    elif sys_plat == "darwin" and norm_adapter in ("all", "macos_system"):
         manager.register_strategy(MacOSDiscoverer())
-        
-    if adapter in ("all", "arcpro") and sys_plat == "windows":
+
+    if norm_adapter in ("all", "toolchains", "toolchain_adapter"):
+        manager.register_strategy(ToolchainDiscoverer())
+    if norm_adapter in ("all", "embedded_apps", "embedded"):
+        manager.register_strategy(EmbeddedAppDiscoverer())
+
+    if norm_adapter in ("all", "arcpro") and sys_plat == "windows":
         manager.register_strategy(ArcProDiscoverer())
-    if adapter in ("all", "qgis"):
+    if norm_adapter in ("all", "qgis"):
         manager.register_strategy(QgisDiscoverer())
 
 
@@ -182,11 +247,19 @@ def handle_mvenv_cli(args: List[str]) -> int:
 
     # discover
     p_discover = subparsers.add_parser("discover", help="Discover host Python interpreters and managed virtual environments")
-    p_discover.add_argument("--adapter", default="all", help="Interpreter discovery adapter filter (all, windows_registry, linux_system, macos_system, arcpro, qgis)")
+    p_discover.add_argument(
+        "--adapter",
+        default="all",
+        help="Interpreter discovery adapter filter (all, windows_registry, linux_system, macos_system, toolchains, embedded_apps, arcpro, qgis)",
+    )
     p_discover.add_argument("--interpreters", action="store_true", help="Include base host interpreters (text output focuses on interpreters when set alone)")
     p_discover.add_argument("--interpreters-only", action="store_true", help="Only scan base host Python interpreters")
     p_discover.add_argument("--mvenvs-only", action="store_true", help="Only scan managed virtual environments")
     p_discover.add_argument("--no-registry", action="store_true", help="Skip global OS registry manifests and default ~/.auraseed directories")
+    p_discover.add_argument("--probe", action="store_true", help="Probe runtime capabilities, ABI tags, and composite scores")
+    p_discover.add_argument("--no-cache", action="store_true", help="Bypass persistent ~/.auraseed/discovery_cache.json when probing")
+    p_discover.add_argument("--require-module", action="append", help="Required importable module(s), comma-separated")
+    p_discover.add_argument("--require-package", action="append", help="Preferred preinstalled package(s), comma-separated")
     p_discover.add_argument("--root", type=str, help="Custom mvenv root directory")
     p_discover.add_argument("--json", action="store_true", help="Output as JSON")
 
@@ -197,7 +270,7 @@ def handle_mvenv_cli(args: List[str]) -> int:
     p_create.add_argument("-r", "--requirements", help="Path to requirements.txt")
     p_create.add_argument("--base", help="Path to base Python executable")
     p_create.add_argument("--spec", help="Version specifier constraint for discovered interpreter (e.g. '>=3.11', '==3.12.*')")
-    p_create.add_argument("--adapter", default="all", help="Interpreter discovery adapter (all, windows_registry, linux_system, macos_system, arcpro, qgis)")
+    p_create.add_argument("--adapter", default="all", help="Interpreter discovery adapter")
     p_create.add_argument("--no-sovereign", action="store_true", help="Disable host isolation")
     p_create.add_argument("--force", action="store_true", help="Overwrite if directory exists")
     p_create.add_argument("--dest", help="Explicit target directory")
@@ -274,7 +347,7 @@ def handle_mvenv_cli(args: List[str]) -> int:
     p_merge.add_argument("sources", nargs="+", help="Source mvenv names to merge")
     p_merge.add_argument("--target", required=True, help="Target merged mvenv name")
     p_merge.add_argument("--delete-sources", action="store_true", help="Delete source mvenvs to reclaim disk space")
-    p_merge.add_argument("--no-repoint", action="store_true", help="Do not repoint installed apps to target")
+    p_merge.add_argument("--no-repoint", action="store_true", help="Do not run host app repoint hook")
     p_merge.add_argument("--root", type=str, help="Custom mvenv root directory")
     p_merge.add_argument("--json", action="store_true", help="Output as JSON")
 
@@ -314,6 +387,10 @@ def handle_mvenv_cli(args: List[str]) -> int:
             include_registry=not parsed.no_registry,
             as_json=bool(parsed.json),
             interpreters_focus=bool(parsed.interpreters),
+            probe=bool(parsed.probe),
+            use_cache=not parsed.no_cache,
+            required_modules=_parse_csv_flags(parsed.require_module),
+            required_packages=_parse_csv_flags(parsed.require_package),
         )
 
     if parsed.mvenv_cmd == "create":
@@ -358,7 +435,7 @@ def handle_mvenv_cli(args: List[str]) -> int:
             print(f"  Python Path:      {rec.python_path}")
             print(f"  Python Version:   {rec.python_version}")
             print(f"  Sovereign:        {rec.is_sovereign}")
-            print(f"  Disk Size:        {rec.size_bytes / (1024*1024):.1f} MB")
+            print(f"  Disk Size:        {rec.size_bytes / (1024 * 1024):.1f} MB")
             print(f"  Packages ({len(rec.packages)}):")
             for pkg in rec.packages:
                 print(f"    - {pkg}")
@@ -442,9 +519,8 @@ def handle_mvenv_cli(args: List[str]) -> int:
             else:
                 print(f"Deleted mvenv '{parsed.name}'.")
             return 0
-        else:
-            print(f"Mvenv '{parsed.name}' not found.", file=sys.stderr)
-            return 1
+        print(f"Mvenv '{parsed.name}' not found.", file=sys.stderr)
+        return 1
 
     if parsed.mvenv_cmd == "verify":
         res = mgr.verify_venv(parsed.name)
@@ -493,17 +569,17 @@ def handle_mvenv_cli(args: List[str]) -> int:
                 source_names=parsed.sources,
                 target_name=parsed.target,
                 delete_sources=parsed.delete_sources,
-                repoint_apps=not parsed.no_repoint
+                repoint_apps=not parsed.no_repoint,
             )
             if getattr(parsed, "json", False):
                 print(json.dumps(res, indent=2))
             else:
-                saved_mb = f"{res.get('reclaimed_bytes', 0) / (1024*1024):.1f} MB"
+                saved_mb = f"{res.get('reclaimed_bytes', 0) / (1024 * 1024):.1f} MB"
                 print(f"Successfully merged {len(res.get('merged_sources', []))} mvenvs into '{parsed.target}'.")
                 print(f"  Packages installed: {res.get('packages_installed', 0)}")
-                if res.get('deleted_sources'):
+                if res.get("deleted_sources"):
                     print(f"  Pruned sources: {', '.join(res.get('deleted_sources'))} (reclaimed {saved_mb})")
-                if res.get('repointed_apps'):
+                if res.get("repointed_apps"):
                     print(f"  Repointed apps: {', '.join(res.get('repointed_apps'))}")
             return 0
         except Exception as e:
@@ -515,8 +591,8 @@ def handle_mvenv_cli(args: List[str]) -> int:
 
 def handle_serve_cli(args: List[str]) -> int:
     parser = argparse.ArgumentParser(prog="auraseed serve", description="Run the AuraSeed API and MCP server.")
-    parser.add_argument("--host", default="127.0.0.1", help="Host interface to bind")
-    parser.add_argument("--port", type=int, default=7099, help="HTTP port to listen on")
+    parser.add_argument("--host", default=None, help="Host interface to bind (default: AURASEED_BIND_HOST or 127.0.0.1)")
+    parser.add_argument("--port", type=int, default=None, help="HTTP port to listen on (default: AURASEED_PORT or 7099)")
     parser.add_argument("--root", help="Custom mvenv root directory")
     parser.add_argument("--mcp", action="store_true", help="Run MCP stdio server instead of HTTP")
     parser.add_argument("--mas", action="store_true", help="Run as an AuraGrid Managed Application Service")
@@ -541,7 +617,7 @@ def handle_serve_cli(args: List[str]) -> int:
 def handle_p2p_cli(args: List[str]) -> int:
     parser = argparse.ArgumentParser(prog="auraseed p2p", description="P2P venv transfer between nodes.")
     parser.add_argument("action", choices=["pull", "push"], help="Pull or push bundle")
-    parser.add_argument("peer_url", help="Peer node URL (e.g. http://10.0.0.5:7099)")
+    parser.add_argument("peer_url", help="Peer node URL")
     parser.add_argument("name", help="Mvenv name")
     parser.add_argument("--root", help="Custom mvenv root directory")
 
@@ -555,7 +631,7 @@ def handle_p2p_cli(args: List[str]) -> int:
         rec = client.fetch_bundle_from_peer(parsed.peer_url, parsed.name, force=True)
         print(f"[AuraSeed P2P] Successfully imported '{rec.name}' ({rec.python_version}).")
         return 0
-    elif parsed.action == "push":
+    if parsed.action == "push":
         print(f"[AuraSeed P2P] Pushing '{parsed.name}' to {parsed.peer_url}...")
         resp = client.push_bundle_to_peer(parsed.peer_url, parsed.name)
         print(f"[AuraSeed P2P] Peer response: {json.dumps(resp, indent=2)}")
@@ -564,164 +640,23 @@ def handle_p2p_cli(args: List[str]) -> int:
     return 1
 
 
-def handle_package_cli(args: List[str]) -> int:
-    parser = argparse.ArgumentParser(prog="auraseed package-app", description="Package an application into a standalone installer bundle.")
-    parser.add_argument("app_dir", nargs="?", default=".", help="Path to application source directory (containing app.json)")
-    parser.add_argument("--out", "-o", default="./dist", help="Output directory for the bundle (default: ./dist)")
-    parser.add_argument("--zip", action="store_true", help="Compress the bundle into a .zip archive")
-    parsed = parser.parse_args(args)
-
-    from auraseed.installer.packager import AppBundlePackager
-    try:
-        packager = AppBundlePackager(Path(parsed.app_dir))
-        out_target = packager.package(Path(parsed.out), create_zip=parsed.zip)
-        print(f"[AuraSeed Packager] Successfully created installer bundle at: {out_target}")
-        return 0
-    except Exception as e:
-        print(f"[AuraSeed Packager] Error: {e}", file=sys.stderr)
-        return 1
-
-
-def handle_deploy_cli(args: List[str]) -> int:
-    parser = argparse.ArgumentParser(prog="auraseed deploy", description="Package and deploy an application to an AuraSeed catalog server.")
-    parser.add_argument("app_dir", nargs="?", default=".", help="Path to app directory (containing app.json) or package bundle")
-    parser.add_argument("--server", default=None, help="AuraSeed server URL (default: default attached catalog or http://localhost:7099)")
-    parser.add_argument("--json", action="store_true", help="Output as JSON")
-    parsed = parser.parse_args(args)
-
-    from auraseed.client import AuraSeedClient
-    from auraseed.catalog.sources import CatalogRegistry
-    reg = CatalogRegistry()
-    server_url = parsed.server or reg.get_default_catalog()
-
-    try:
-        client = AuraSeedClient(base_url=server_url)
-        if not parsed.json:
-            print(f"[AuraSeed Deploy] Packaging and deploying '{parsed.app_dir}' to {server_url}...")
-        res = client.deploy_app(parsed.app_dir)
-        if parsed.json:
-            print(json.dumps(res, indent=2))
-        else:
-            print(f"[AuraSeed Deploy] Successfully deployed {res.get('name')} v{res.get('version')}!")
-            print(f"  Display Name: {res.get('display_name')}")
-            print(f"  Bundle Size:  {res.get('size_bytes', 0) / (1024*1024):.1f} MB")
-            print(f"  Download URL: {res.get('download_url')}")
-        return 0
-    except Exception as e:
-        print(f"[AuraSeed Deploy] Error: {e}", file=sys.stderr)
-        return 1
-
-
-def handle_catalog_cli(args: List[str]) -> int:
-    parser = argparse.ArgumentParser(prog="auraseed catalog", description="Manage and query AuraSeed application catalogs.")
-    subparsers = parser.add_subparsers(dest="catalog_cmd", help="Subcommand to execute")
-
-    p_list = subparsers.add_parser("list", help="List applications in catalog")
-    p_list.add_argument("--server", default=None, help="Catalog server URL")
-    p_list.add_argument("-q", "--query", help="Filter applications")
-    p_list.add_argument("--json", action="store_true", help="Output as JSON")
-
-    p_get = subparsers.add_parser("get", help="Get application metadata from catalog")
-    p_get.add_argument("name", help="Application identifier")
-    p_get.add_argument("--server", default=None, help="Catalog server URL")
-    p_get.add_argument("--json", action="store_true", help="Output as JSON")
-
-    p_download = subparsers.add_parser("download", help="Download application bundle from catalog")
-    p_download.add_argument("name", help="Application identifier")
-    p_download.add_argument("--server", default=None, help="Catalog server URL")
-    p_download.add_argument("--out", "-o", default=None, help="Output destination path")
-
-    p_sources = subparsers.add_parser("sources", help="List attached catalog sources")
-    p_sources.add_argument("--json", action="store_true", help="Output as JSON")
-
-    p_attach = subparsers.add_parser("attach", help="Attach a new catalog server URL")
-    p_attach.add_argument("url", help="Catalog server URL")
-    p_attach.add_argument("--label", help="Friendly label")
-    p_attach.add_argument("--default", action="store_true", help="Set as default catalog")
-
-    p_detach = subparsers.add_parser("detach", help="Detach a catalog server URL")
-    p_detach.add_argument("url", help="Catalog server URL")
-
-    parsed = parser.parse_args(args)
-    if not parsed.catalog_cmd:
-        parser.print_help()
-        return 1
-
-    from auraseed.client import AuraSeedClient
-    from auraseed.catalog.sources import CatalogRegistry
-    reg = CatalogRegistry()
-    server_url = getattr(parsed, "server", None) or reg.get_default_catalog()
-
-    if parsed.catalog_cmd == "sources":
-        sources = reg.list_catalogs()
-        if getattr(parsed, "json", False):
-            print(json.dumps(sources, indent=2))
-        else:
-            print("Attached AuraSeed Catalogs:")
-            for s in sources:
-                def_mark = " (default)" if s.get("is_default") else ""
-                print(f"  - {s.get('label', '')}: {s['url']}{def_mark}")
-        return 0
-
-    if parsed.catalog_cmd == "attach":
-        res = reg.add_catalog(parsed.url, label=parsed.label, set_default=parsed.default)
-        print(f"Attached catalog: {res['label']} ({res['url']})")
-        return 0
-
-    if parsed.catalog_cmd == "detach":
-        ok = reg.remove_catalog(parsed.url)
-        if ok:
-            print(f"Detached catalog: {parsed.url}")
-            return 0
-        else:
-            print(f"Catalog URL not found: {parsed.url}", file=sys.stderr)
-            return 1
-
-    client = AuraSeedClient(base_url=server_url)
-
-    if parsed.catalog_cmd == "list":
-        try:
-            apps = client.list_apps(query=parsed.query)
-            if getattr(parsed, "json", False):
-                print(json.dumps(apps, indent=2))
-            else:
-                print(f"Applications in {server_url} ({len(apps)} found):")
-                for a in apps:
-                    size_mb = f"{a.get('size_bytes', 0) / (1024*1024):.1f} MB"
-                    print(f"  - {a['name']:<18} v{a.get('version', '1.0.0'):<8} ({size_mb}) - {a.get('display_name')}")
-            return 0
-        except Exception as e:
-            print(f"Error querying catalog: {e}", file=sys.stderr)
-            return 1
-
-    if parsed.catalog_cmd == "get":
-        try:
-            app = client.get_app(parsed.name)
-            if getattr(parsed, "json", False):
-                print(json.dumps(app, indent=2))
-            else:
-                print(f"Application: {app['name']}")
-                print(f"  Display Name: {app.get('display_name')}")
-                print(f"  Version:      {app.get('version')}")
-                print(f"  Description:  {app.get('description')}")
-                print(f"  Port:         {app.get('default_port')}")
-                print(f"  Entrypoint:   {app.get('entrypoint_command')}")
-            return 0
-        except Exception as e:
-            print(f"Error retrieving application: {e}", file=sys.stderr)
-            return 1
-
-    if parsed.catalog_cmd == "download":
-        try:
-            out_dest = Path(parsed.out) if parsed.out else Path.cwd()
-            saved = client.download_app(parsed.name, out_dest)
-            print(f"Downloaded bundle: {saved}")
-            return 0
-        except Exception as e:
-            print(f"Error downloading bundle: {e}", file=sys.stderr)
-            return 1
-
-    return 0
+def _handle_migrated_app_command(cmd: str) -> int:
+    guidance = {
+        "install-app": "aurasprout install",
+        "install": "aurasprout install",
+        "package-app": "aurasprout package",
+        "bundle-app": "aurasprout package",
+        "package": "aurasprout package",
+        "deploy": "aurasprout deploy",
+        "catalog": "aurasprout catalog",
+    }
+    target = guidance.get(cmd, "aurasprout")
+    print(
+        f"[AuraSeed] The '{cmd}' command has migrated to AuraSprout. "
+        f"Use '{target}' instead (auraseed now focuses strictly on runtime discovery and mvenv management).",
+        file=sys.stderr,
+    )
+    return 2
 
 
 def main() -> int:
@@ -732,16 +667,9 @@ def main() -> int:
         cmd = sys.argv[1].lower()
         if cmd == "discover":
             return handle_discover_cli(sys.argv[2:])
-        if cmd in ("install-app", "install"):
-            from auraseed.installer.cli import run_installer_cli
-            return run_installer_cli(sys.argv[2:])
-        if cmd in ("package-app", "bundle-app", "package"):
-            return handle_package_cli(sys.argv[2:])
-        if cmd == "deploy":
-            return handle_deploy_cli(sys.argv[2:])
-        if cmd == "catalog":
-            return handle_catalog_cli(sys.argv[2:])
-        if cmd in ("gui", "hub", "app-manager"):
+        if cmd in ("install-app", "install", "package-app", "bundle-app", "package", "deploy", "catalog"):
+            return _handle_migrated_app_command(cmd)
+        if cmd in ("gui", "hub", "mvenv-gui"):
             from auraseed.gui import launch_gui
             return launch_gui()
         if cmd == "mvenv":
@@ -758,20 +686,19 @@ def main() -> int:
     parser.add_argument("--dest", type=str, help="Destination folder for the sovereign venv. Defaults to ~/.auraseed/venvs/<env_name>")
     parser.add_argument("--adapter", type=str, default="all", help="Which discovery adapter to prioritize.")
     parser.add_argument("--relaunch", type=str, help="Optional path to a Python script to relaunch in the new environment.")
-    
     parser.add_argument("--force", action="store_true", help="Force re-seeding if destination folder already exists.")
     parser.add_argument("--no-register", action="store_true", help="Skip registering the environment in the OS registry.")
-    
+
     args = parser.parse_args()
 
     # 1. Discovery
     manager = DiscoveryManager()
     register_platform_strategies(manager, args.adapter)
-    
+
     print("[AuraSeed] Discovering Python environments...")
     results = manager.run_discovery()
     env_list = list(results.values())
-    
+
     if not env_list:
         print("[AuraSeed] Error: No Python environments found.")
         return 1
@@ -788,18 +715,18 @@ def main() -> int:
         strategy = VersionSpecStrategy(args.spec)
     else:
         strategy = InteractiveSelectionStrategy()
-        
+
     selected_env = strategy.select(env_list)
     if not selected_env:
         print("[AuraSeed] No environment selected. Exiting.")
         return 1
-        
+
     print(f"[AuraSeed] Selected: {selected_env.name} ({selected_env.executable})")
 
     # 3. Seeding
     safe_name = "".join([c if c.isalnum() else "_" for c in selected_env.name]).lower().strip("_")
     dest_path = Path(args.dest) if args.dest else Path.home() / ".auraseed" / "venvs" / safe_name
-    
+
     if dest_path.exists() and not args.force:
         print(f"[AuraSeed] Destination {dest_path} already exists. Assuming environment is seeded.")
     else:
@@ -810,16 +737,16 @@ def main() -> int:
         print(f"[AuraSeed] Seeding sovereign environment at {dest_path}...")
         sovereign = SovereignVenvEngine()
         sovereign.create_venv(selected_env, dest_path)
-        
+
         print("[AuraSeed] Executing Host Isolation...")
         isolation = HostIsolationEngine()
         isolation.isolate(selected_env, dest_path)
-        
+
         from datetime import datetime, timezone
-        from auraseed.models import SelectedInterpreterContext, IsolationStatus
+        from auraseed.models import IsolationStatus, SelectedInterpreterContext
         now_str = datetime.now(timezone.utc).isoformat()
         manifest = SeedManifest(
-            seed_version="1.0.0",
+            seed_version="1.1.0",
             created_at=now_str,
             selected_interpreter=SelectedInterpreterContext(
                 executable=str(selected_env.executable),
@@ -862,7 +789,7 @@ def main() -> int:
             print(f"[AuraSeed] Warning: Failed to register environment with OS ({e})")
     else:
         print("[AuraSeed] Skipping environment registration (--no-register active).")
-        
+
     print(f"\n[AuraSeed] Complete! Venv located at: {dest_path}")
 
     # 5. Relaunch
@@ -871,11 +798,11 @@ def main() -> int:
         if not relaunch_script.exists():
             print(f"[AuraSeed] Error: Relaunch script not found at {relaunch_script}")
             return 1
-            
+
         print(f"[AuraSeed] Relaunching plugin script: {relaunch_script}")
         is_win = platform.system().lower() == "windows"
         venv_python = dest_path / "Scripts" / "python.exe" if is_win else dest_path / "bin" / "python"
-        
+
         cmd = [str(venv_python), str(relaunch_script)]
         try:
             subprocess.run(cmd, check=True)

@@ -1,8 +1,11 @@
-import os
 import json
-from dataclasses import dataclass, asdict
+import logging
+import os
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
+
+_LOG = logging.getLogger(__name__)
 
 
 @dataclass
@@ -78,7 +81,7 @@ def detect_grid() -> Optional[GridContext]:
                         mvenv_root=py.get("MvenvRootPath"),
                         config_source=str(candidate)
                     )
-            except Exception:
-                pass
+            except (OSError, json.JSONDecodeError, TypeError, KeyError, ValueError) as exc:
+                _LOG.debug("Skipping unreadable appsettings candidate %s: %s", candidate, exc)
 
     return None

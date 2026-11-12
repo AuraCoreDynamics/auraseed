@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Iterator, List, Optional, Set
 from auraseed.models import DiscoveredEnvironment
 from auraseed.discovery.base import BaseDiscoverer
+from auraseed.discovery.prober import iter_env_search_paths, sanitize_candidate_path
 
 class QgisDiscoverer(BaseDiscoverer):
     """
@@ -38,20 +39,12 @@ class QgisDiscoverer(BaseDiscoverer):
             if p.exists():
                 candidates.append(p)
 
-        extra_env = os.environ.get("AURASEED_EXTRA_SEARCH_PATHS")
-        if extra_env:
-            for piece in extra_env.split(os.pathsep):
-                piece_p = Path(piece.strip())
-                if piece_p.exists():
-                    candidates.append(piece_p)
+        candidates.extend(iter_env_search_paths(("AURASEED_EXTRA_SEARCH_PATHS",)))
 
         # 1. Environment variables
-        for env_var in ("QGIS_PREFIX_PATH", "OSGEO4W_ROOT"):
-            val = os.environ.get(env_var)
-            if val:
-                p = Path(val)
-                if (p / "bin").exists() or (p.parent / "bin").exists():
-                    candidates.append(p if (p / "bin").exists() else p.parent)
+        for p in iter_env_search_paths(("QGIS_PREFIX_PATH", "OSGEO4W_ROOT")):
+            if (p / "bin").exists() or (p.parent / "bin").exists():
+                candidates.append(p if (p / "bin").exists() else p.parent)
 
         # 2. Well-known directories
         search_dirs = [
@@ -60,9 +53,10 @@ class QgisDiscoverer(BaseDiscoverer):
             Path("C:/OSGeo4W"),
             Path("C:/OSGeo4W64"),
         ]
-        local_app_data = os.environ.get("LOCALAPPDATA")
-        if local_app_data:
-            search_dirs.append(Path(local_app_data) / "Programs")
+        local_app_raw = os.environ.get("LOCALAPPDATA")
+        local_app_path = sanitize_candidate_path(local_app_raw) if local_app_raw else None
+        if local_app_path is not None:
+            search_dirs.append(local_app_path / "Programs")
 
         for sdir in search_dirs:
             if not sdir.exists():

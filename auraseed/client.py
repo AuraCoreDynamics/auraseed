@@ -1,19 +1,13 @@
 """
-Client SDK for AuraSeed Application Deployment and MVenv Management.
+Client SDK for AuraSeed Runtime Discovery and Managed Virtual Environment (mvenv) Management.
 Zero external runtime dependencies (Python standard library only).
 """
-import io
-import os
 import json
-import shutil
-import tempfile
+import os
+import urllib.error
 import urllib.parse
 import urllib.request
-import urllib.error
-from pathlib import Path
-from typing import Dict, Any, List, Optional, Union
-
-from auraseed.installer.models import AppManifest
+from typing import Any, Dict, List, Optional, Union
 
 
 class AuraSeedClient:
@@ -22,8 +16,13 @@ class AuraSeedClient:
     Conforms to the independent OpenAPI specification.
     """
 
-    def __init__(self, base_url: str = "http://localhost:7099", timeout: int = 30):
-        url = base_url.strip()
+    def __init__(self, base_url: Optional[str] = None, timeout: int = 30) -> None:
+        raw_url = base_url if base_url is not None else os.environ.get("AURASEED_URL", "")
+        url = raw_url.strip()
+        if not url:
+            raise ValueError(
+                "AuraSeed server URL is required. Pass base_url or set the AURASEED_URL environment variable."
+            )
         if not (url.startswith("http://") or url.startswith("https://")):
             url = f"http://{url}"
         self.base_url = url.rstrip("/")
@@ -40,7 +39,7 @@ class AuraSeedClient:
         path: str,
         body: Optional[Union[bytes, Dict[str, Any]]] = None,
         headers: Optional[Dict[str, str]] = None,
-        query: Optional[Dict[str, str]] = None
+        query: Optional[Dict[str, str]] = None,
     ) -> Any:
         url = self._url(path)
         if query:
@@ -78,7 +77,7 @@ class AuraSeedClient:
                 err_json = json.loads(err_body.decode("utf-8"))
                 if "error" in err_json:
                     msg = f"{msg} - {err_json['error']}"
-            except Exception:
+            except (UnicodeDecodeError, json.JSONDecodeError, TypeError):
                 pass
             raise RuntimeError(msg) from e
         except urllib.error.URLError as e:
@@ -96,90 +95,19 @@ class AuraSeedClient:
             return raw.decode("utf-8") if isinstance(raw, bytes) else raw
         return self._request("GET", "/api/v1/openapi.json")
 
-    def discover_runtimes(self) -> List[Dict[str, Any]]:
-        """Queries the server for host Python interpreters."""
-        data = self._request("GET", "/api/v1/discovery")
-        return data.get("interpreters", [])
-
-    # Catalog & Application Deployment
-    def list_apps(self, query: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Lists cataloged applications available on the server."""
-        params = {"q": query} if query else None
-        data = self._request("GET", "/api/v1/apps", query=params)
-        return data.get("apps", [])
-
-    def get_app(self, name: str) -> Dict[str, Any]:
-        """Retrieves metadata for a specific application."""
-        return self._request("GET", f"/api/v1/apps/{name}")
-
-    def download_app(self, name: str, dest_path: Union[str, Path]) -> Path:
-        """Downloads an application installer bundle from the catalog."""
-        dest = Path(dest_path).resolve()
-        data = self._request("GET", f"/api/v1/apps/{name}/download")
-        if dest.is_dir():
-            dest = dest / f"{name}-bundle.zip"
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(data)
-        return dest
-
-    def deploy_app(
+    def discover_runtimes(
         self,
-        app_source_or_bundle: Union[str, Path, bytes],
-        filename: Optional[str] = None,
-        manifest_override: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
-        """
-        Packages and deploys an application to the server catalog.
-        Accepts:
-          - A directory containing an app.json manifest (packaged automatically into a zip bundle)
-          - An existing .zip or .tar.gz bundle path
-          - Raw package bundle bytes
-        """
-        headers = {}
-        temp_dir = None
-
-        try:
-            if isinstance(app_source_or_bundle, (str, Path)):
-                p = Path(app_source_or_bundle).resolve()
-                if p.is_dir():
-                    # Directory: Package up with AppBundlePackager
-                    from auraseed.installer.packager import AppBundlePackager
-                    temp_dir = tempfile.mkdtemp(prefix="auraseed_pack_")
-                    packager = AppBundlePackager(p)
-                    zip_bundle = packager.package(Path(temp_dir), create_zip=True)
-                    payload_bytes = zip_bundle.read_bytes()
-                    chosen_filename = zip_bundle.name
-                    headers["Content-Type"] = "application/zip"
-                else:
-                    payload_bytes = p.read_bytes()
-                    chosen_filename = p.name
-                    if p.name.endswith(".zip"):
-                        headers["Content-Type"] = "application/zip"
-                    else:
-                        headers["Content-Type"] = "application/gzip"
-            elif isinstance(app_source_or_bundle, bytes):
-                payload_bytes = app_source_or_bundle
-                chosen_filename = filename or "bundle.zip"
-                headers["Content-Type"] = "application/zip"
-            else:
-                raise TypeError("app_source_or_bundle must be a directory Path, bundle file Path, or bytes")
-
-            headers["X-App-Filename"] = chosen_filename
-            if manifest_override:
-                headers["X-App-Manifest"] = json.dumps(manifest_override)
-
-            return self._request("POST", "/api/v1/apps", body=payload_bytes, headers=headers)
-        finally:
-            if temp_dir and os.path.exists(temp_dir):
-                shutil.rmtree(temp_dir, ignore_errors=True)
-
-    def delete_app(self, name: str) -> bool:
-        """Deletes an application from the server catalog."""
-        try:
-            resp = self._request("DELETE", f"/api/v1/apps/{name}")
-            return bool(resp.get("success", True))
-        except RuntimeError:
-            return False
+        adapter: str = "all",
+        probe: bool = False,
+        use_cache: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """Queries the server for host Python interpreters."""
+        params: Dict[str, str] = {"adapter": adapter}
+        if probe:
+            params["probe"] = "true"
+            params["cache"] = "true" if use_cache else "false"
+        data = self._request("GET", "/api/v1/discovery", query=params)
+        return data.get("interpreters", [])
 
     # Managed Virtual Environments (mvenvs)
     def list_mvenvs(self) -> List[Dict[str, Any]]:
@@ -200,7 +128,9 @@ class AuraSeedClient:
         sovereign: bool = True,
         force: bool = False,
         target_dir: Optional[str] = None,
-        tags: Optional[Dict[str, Any]] = None
+        tags: Optional[Dict[str, Any]] = None,
+        python_spec: Optional[str] = None,
+        adapter: str = "all",
     ) -> Dict[str, Any]:
         """Creates a managed virtual environment on the server node."""
         body = {
@@ -211,7 +141,9 @@ class AuraSeedClient:
             "sovereign": sovereign,
             "force": force,
             "target_dir": target_dir,
-            "tags": tags or {}
+            "tags": tags or {},
+            "python_spec": python_spec,
+            "adapter": adapter,
         }
         return self._request("POST", "/api/v1/mvenv", body=body)
 
@@ -224,13 +156,13 @@ class AuraSeedClient:
         name: str,
         packages: Optional[List[str]] = None,
         requirements: Optional[str] = None,
-        upgrade: bool = False
+        upgrade: bool = False,
     ) -> Dict[str, Any]:
         """Installs packages into an mvenv."""
         body = {
             "packages": packages or [],
             "requirements": requirements,
-            "upgrade": upgrade
+            "upgrade": upgrade,
         }
         return self._request("POST", f"/api/v1/mvenv/{name}/install", body=body)
 
@@ -247,7 +179,7 @@ class AuraSeedClient:
         sources: List[str],
         target: str,
         delete_sources: bool = False,
-        repoint_apps: bool = True
+        repoint_apps: bool = True,
     ) -> Dict[str, Any]:
         """
         Merges multiple source mvenvs into a single target mvenv to reclaim disk space.
@@ -256,6 +188,6 @@ class AuraSeedClient:
             "sources": sources,
             "target": target,
             "delete_sources": delete_sources,
-            "repoint_apps": repoint_apps
+            "repoint_apps": repoint_apps,
         }
         return self._request("POST", "/api/v1/mvenv/merge", body=body)

@@ -1,8 +1,8 @@
-import os
 from pathlib import Path
 from typing import Iterator, Set
 from auraseed.models import DiscoveredEnvironment
 from auraseed.discovery.base import BaseDiscoverer
+from auraseed.discovery.prober import iter_env_search_paths
 
 class LinuxDiscoverer(BaseDiscoverer):
     """
@@ -18,14 +18,13 @@ class LinuxDiscoverer(BaseDiscoverer):
         search_paths = []
         
         # 1. Environment Variables
-        if "PYTHONHOME" in os.environ:
-            search_paths.append(Path(os.environ["PYTHONHOME"]) / "bin" / "python3")
-            search_paths.append(Path(os.environ["PYTHONHOME"]) / "bin" / "python")
-            
-        path_var = os.environ.get("PATH", "")
-        for p in path_var.split(os.pathsep):
-            search_paths.append(Path(p) / "python3")
-            search_paths.append(Path(p) / "python")
+        for py_home in iter_env_search_paths(("PYTHONHOME",)):
+            search_paths.append(py_home / "bin" / "python3")
+            search_paths.append(py_home / "bin" / "python")
+
+        for p_dir in iter_env_search_paths(("PATH",)):
+            search_paths.append(p_dir / "python3")
+            search_paths.append(p_dir / "python")
             
         # 2. Common Linux Install paths
         common_dirs = [

@@ -1,17 +1,17 @@
 openapi: 3.0.3
 info:
   title: AuraSeed Server API
-  description: Independent specification for AuraSeed-compliant application catalog, deployment, and managed virtual environment (mvenv) servers.
-  version: 1.0.0
+  description: Independent specification for AuraSeed runtime discovery, capability probing, MCP bridge, and managed virtual environment (mvenv) servers.
+  version: 1.1.0
 servers:
-  - url: http://localhost:7099
+  - url: http://127.0.0.1:7099
     description: Local AuraSeed API Daemon
 
 paths:
   /health:
     get:
       summary: Service Health Probe
-      description: Returns health status, runtime information, connected grid status, and catalog counts.
+      description: Returns health status, runtime information, connected grid status, and mvenv count.
       responses:
         '200':
           description: Service is healthy.
@@ -47,7 +47,20 @@ paths:
   /api/v1/discovery:
     get:
       summary: Discover Host Python Runtimes
-      description: Scans host environment and returns discovered Python interpreters.
+      description: Scans host environment and returns discovered Python interpreters with optional capability probing.
+      parameters:
+        - name: adapter
+          in: query
+          required: false
+          schema:
+            type: string
+            default: all
+        - name: probe
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
       responses:
         '200':
           description: List of discovered Python runtimes.
@@ -55,144 +68,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/DiscoveryResponse'
-
-  /api/v1/apps:
-    get:
-      summary: List Catalog Applications
-      description: Returns all published applications in the server catalog.
-      parameters:
-        - name: q
-          in: query
-          description: Search term to filter apps by name, display name, or description.
-          required: false
-          schema:
-            type: string
-      responses:
-        '200':
-          description: List of cataloged applications.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AppCatalogListResponse'
-    post:
-      summary: Deploy Application Package
-      description: Uploads and deploys an application package (.zip or .tar.gz bundle containing app.json) to the server catalog.
-      requestBody:
-        required: true
-        description: Binary application package archive (.zip or .tar.gz)
-        content:
-          application/zip:
-            schema:
-              type: string
-              format: binary
-          application/gzip:
-            schema:
-              type: string
-              format: binary
-          application/octet-stream:
-            schema:
-              type: string
-              format: binary
-      responses:
-        '201':
-          description: Application successfully deployed and cataloged.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CatalogApp'
-        '400':
-          description: Invalid application package or missing manifest.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-
-  /api/v1/apps/{name}:
-    get:
-      summary: Get Catalog Application Details
-      description: Retrieves metadata for a specific application in the catalog.
-      parameters:
-        - name: name
-          in: path
-          required: true
-          description: Application identifier
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Application metadata.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CatalogApp'
-        '404':
-          description: Application not found.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-    delete:
-      summary: Delete Application from Catalog
-      description: Removes an application and its deployed package bundle from the catalog.
-      parameters:
-        - name: name
-          in: path
-          required: true
-          description: Application identifier
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Application successfully deleted.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                  message:
-                    type: string
-        '404':
-          description: Application not found.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-
-  /api/v1/apps/{name}/download:
-    get:
-      summary: Download Application Package Bundle
-      description: Downloads the binary installer package (.zip or .tar.gz) for the application.
-      parameters:
-        - name: name
-          in: path
-          required: true
-          description: Application identifier
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Application bundle archive.
-          content:
-            application/zip:
-              schema:
-                type: string
-                format: binary
-            application/gzip:
-              schema:
-                type: string
-                format: binary
-            application/octet-stream:
-              schema:
-                type: string
-                format: binary
-        '404':
-          description: Application bundle not found.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
 
   /api/v1/mvenv:
     get:
@@ -386,7 +261,7 @@ paths:
   /api/v1/mvenv/merge:
     post:
       summary: Merge Multiple Mvenvs
-      description: Combines packages from multiple source mvenvs into a single target mvenv to save disk space, optionally deleting sources and repointing apps.
+      description: Combines packages from multiple source mvenvs into a single target mvenv to save disk space.
       requestBody:
         required: true
         content:
@@ -440,7 +315,7 @@ components:
           example: auraseed
         version:
           type: string
-          example: 0.2.0
+          example: 1.1.0
         is_grid_connected:
           type: boolean
         node_id:
@@ -450,8 +325,34 @@ components:
           type: string
         mvenv_count:
           type: integer
-        app_count:
-          type: integer
+
+    RuntimeCapabilityReport:
+      type: object
+      properties:
+        has_ssl:
+          type: boolean
+        has_sqlite3:
+          type: boolean
+        has_ctypes:
+          type: boolean
+        has_tkinter:
+          type: boolean
+        has_venv:
+          type: boolean
+        has_pip:
+          type: boolean
+        architecture:
+          type: string
+        abi_tags:
+          type: array
+          items:
+            type: string
+        preinstalled_packages:
+          type: array
+          items:
+            type: string
+        composite_score:
+          type: number
 
     DiscoveryResponse:
       type: object
@@ -471,73 +372,8 @@ components:
                 type: string
               source_type:
                 type: string
-
-    CatalogApp:
-      type: object
-      required:
-        - name
-        - display_name
-        - version
-      properties:
-        name:
-          type: string
-          example: bijou
-        display_name:
-          type: string
-          example: Bijou Causal Graph Engine
-        version:
-          type: string
-          example: 0.1.0
-        description:
-          type: string
-          example: Multi-Echelon Impact & Causal Graph Engine
-        entrypoint_command:
-          type: string
-          example: bijou --mode standalone --port {port}
-        default_port:
-          type: integer
-          nullable: true
-          example: 8000
-        size_bytes:
-          type: integer
-          example: 5242880
-        bundle_filename:
-          type: string
-          example: bijou-0.1.0.zip
-        bundle_sha256:
-          type: string
-          example: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-        download_url:
-          type: string
-          example: /api/v1/apps/bijou/download
-        created_at:
-          type: string
-        updated_at:
-          type: string
-        subprojects:
-          type: array
-          items:
-            type: string
-        pip_install_args:
-          type: array
-          items:
-            type: string
-        artifacts:
-          type: array
-          items:
-            type: string
-        metadata:
-          type: object
-
-    AppCatalogListResponse:
-      type: object
-      properties:
-        apps:
-          type: array
-          items:
-            $ref: '#/components/schemas/CatalogApp'
-        total:
-          type: integer
+              capabilities:
+                $ref: '#/components/schemas/RuntimeCapabilityReport'
 
     MvenvRecord:
       type: object
@@ -615,11 +451,9 @@ components:
         python_spec:
           type: string
           nullable: true
-          description: Version specifier constraint for base interpreter discovery (e.g. >=3.11)
         adapter:
           type: string
           default: all
-          description: Interpreter discovery adapter filter (all, arcpro, qgis, windows_registry, linux_system, macos_system)
         tags:
           type: object
 
@@ -654,18 +488,14 @@ components:
           type: array
           items:
             type: string
-          description: List of source mvenv names to merge
         target:
           type: string
-          description: Name of the target merged mvenv
         delete_sources:
           type: boolean
           default: false
-          description: Whether to delete source mvenvs to reclaim disk space
         repoint_apps:
           type: boolean
           default: true
-          description: Whether to update local installed apps bound to source mvenvs to target
 
     MvenvMergeResponse:
       type: object

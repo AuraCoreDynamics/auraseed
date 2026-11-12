@@ -8,6 +8,7 @@ import unittest
 import urllib.request
 from pathlib import Path
 
+from auraseed.client import AuraSeedClient
 from auraseed.mvenv.manager import MvenvManager
 from auraseed.api.server import create_api_server
 
@@ -95,6 +96,37 @@ class TestMvenvApi(unittest.TestCase):
         # 7. List now empty again
         status, data = self._http_get("/api/v1/mvenv")
         self.assertEqual(data.get("total"), 0)
+
+    def test_mvenv_merge_via_sdk(self):
+        client = AuraSeedClient(base_url=self.base_url)
+
+        spec = client.get_openapi(format="json")
+        self.assertIn("/api/v1/mvenv/merge", spec.get("paths", {}))
+        self.assertNotIn("/api/v1/apps", spec.get("paths", {}))
+
+        env1 = client.create_mvenv("merge-env-1", sovereign=False, base_python=sys.executable)
+        self.assertEqual(env1["name"], "merge-env-1")
+
+        env2 = client.create_mvenv("merge-env-2", sovereign=False, base_python=sys.executable)
+        self.assertEqual(env2["name"], "merge-env-2")
+
+        merge_result = client.merge_mvenvs(
+            sources=["merge-env-1", "merge-env-2"],
+            target="merged-consolidated-env",
+            delete_sources=True,
+        )
+        self.assertTrue(merge_result.get("success"))
+        self.assertEqual(merge_result.get("target", {}).get("name"), "merged-consolidated-env")
+        self.assertIn("merge-env-1", merge_result.get("deleted_sources", []))
+        self.assertIn("merge-env-2", merge_result.get("deleted_sources", []))
+
+        existing_names = [v["name"] for v in client.list_mvenvs()]
+        self.assertIn("merged-consolidated-env", existing_names)
+        self.assertNotIn("merge-env-1", existing_names)
+        self.assertNotIn("merge-env-2", existing_names)
+
+        # Clean up merged env
+        self.assertTrue(client.delete_mvenv("merged-consolidated-env"))
 
 
 if __name__ == "__main__":

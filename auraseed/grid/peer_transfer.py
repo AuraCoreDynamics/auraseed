@@ -1,12 +1,15 @@
-import os
 import json
-import urllib.request
+import logging
+import os
 import urllib.error
+import urllib.request
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
 
 from auraseed.mvenv.manager import MvenvManager
 from auraseed.mvenv.models import MvenvRecord
+
+_LOG = logging.getLogger(__name__)
 
 
 class P2PVenvClient:
@@ -43,8 +46,10 @@ class P2PVenvClient:
             return rec
         finally:
             if temp_bundle.exists():
-                try: os.remove(temp_bundle)
-                except OSError: pass
+                try:
+                    os.remove(temp_bundle)
+                except OSError as exc:
+                    _LOG.warning("Failed to remove temporary peer bundle %s: %s", temp_bundle, exc)
 
     def push_bundle_to_peer(self, peer_url: str, mvenv_name: str) -> Dict[str, Any]:
         """

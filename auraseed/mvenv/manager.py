@@ -1,3 +1,4 @@
+import logging
 import os
 import sys
 import shutil
@@ -6,7 +7,7 @@ import hashlib
 import platform
 import subprocess
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Callable, Dict, Any, List, Optional
 from datetime import datetime, timezone
 
 from auraseed.models import DiscoveredEnvironment
@@ -16,13 +17,17 @@ from auraseed.discovery.os.linux import LinuxDiscoverer
 from auraseed.discovery.os.macos import MacOSDiscoverer
 from auraseed.discovery.adapters.arcpro import ArcProDiscoverer
 from auraseed.discovery.adapters.qgis import QgisDiscoverer
-from auraseed.governance.rules import LatestVersionStrategy, VersionSpecStrategy
+from auraseed.discovery.adapters.toolchains import ToolchainDiscoverer
+from auraseed.discovery.adapters.embedded import EmbeddedAppDiscoverer
+from auraseed.governance.rules import CapabilityScoreStrategy, LatestVersionStrategy, VersionSpecStrategy
 from auraseed.seed.sovereign import SovereignVenvEngine
 from auraseed.seed.isolation import HostIsolationEngine
 from auraseed.seed.artifacts import generate_launchers
 from auraseed.registry.manager import RegistryManager
 from auraseed.mvenv.models import MvenvRecord, MvenvCreateRequest, MvenvBundleMetadata
 from auraseed.mvenv.catalog import MvenvCatalog
+
+_LOG = logging.getLogger(__name__)
 
 
 class MvenvManager:
@@ -115,11 +120,7 @@ class MvenvManager:
             }
         )
 
-    def discover_interpreters(self, adapter: str = "all") -> List[DiscoveredEnvironment]:
-        """
-        Discovers available host Python interpreters using AuraSeed's discovery engine.
-        Supports adapter filters: all, windows_registry, linux_system, macos_system, arcpro, qgis.
-        """
+    def _build_discovery_manager(self, adapter: str = "all") -> DiscoveryManager:
         manager = DiscoveryManager()
         sys_plat = platform.system().lower()
         norm_adapter = (adapter or "all").strip().lower()
@@ -131,12 +132,39 @@ class MvenvManager:
         elif sys_plat == "darwin" and norm_adapter in ("all", "macos_system", "system", "os"):
             manager.register_strategy(MacOSDiscoverer())
 
+        if norm_adapter in ("all", "toolchains", "toolchain_adapter"):
+            manager.register_strategy(ToolchainDiscoverer())
+        if norm_adapter in ("all", "embedded_apps", "embedded"):
+            manager.register_strategy(EmbeddedAppDiscoverer())
+
         if sys_plat == "windows" and norm_adapter in ("all", "arcpro", "arcpro_adapter"):
             manager.register_strategy(ArcProDiscoverer())
         if norm_adapter in ("all", "qgis", "qgis_adapter"):
             manager.register_strategy(QgisDiscoverer())
+        return manager
 
-        results = manager.run_discovery()
+    def discover_interpreters(
+        self,
+        adapter: str = "all",
+        probe_capabilities: bool = False,
+        use_cache: bool = False,
+        required_modules: Optional[List[str]] = None,
+        required_packages: Optional[List[str]] = None,
+    ) -> List[DiscoveredEnvironment]:
+        """
+        Discovers available host Python interpreters using AuraSeed's discovery engine.
+        Supports adapter filters: all, windows_registry, linux_system, macos_system,
+        toolchains, embedded_apps, arcpro, qgis.
+        """
+        norm_adapter = (adapter or "all").strip().lower()
+        manager = self._build_discovery_manager(norm_adapter)
+
+        results = manager.run_discovery(
+            probe_capabilities=probe_capabilities,
+            use_cache=use_cache,
+            required_modules=required_modules,
+            required_packages=required_packages,
+        )
         env_list = list(results.values())
 
         for env_item in env_list:
@@ -383,18 +411,18 @@ class MvenvManager:
         python_spec: Optional[str] = None
     ) -> DiscoveredEnvironment:
         """
-        Discovers the best host interpreter using AuraSeed's discovery engine,
-        optionally constrained by adapter and semantic version specification.
+        Discovers the best host interpreter using AuraSeed's capability-aware
+        discovery engine, optionally constrained by adapter and semantic version spec.
         """
         norm_adapter = (adapter or "all").strip().lower()
-        env_list = self.discover_interpreters(adapter=norm_adapter)
-
-        if not env_list:
-            if norm_adapter != "all":
-                raise ValueError(f"No Python interpreters discovered for adapter '{adapter}'.")
-            return self._current_python_env()
+        manager = self._build_discovery_manager(norm_adapter)
 
         if python_spec:
+            env_list = list(manager.run_discovery(probe_capabilities=True, use_cache=True).values())
+            if not env_list:
+                if norm_adapter != "all":
+                    raise ValueError(f"No Python interpreters discovered for adapter '{adapter}'.")
+                env_list = [self._current_python_env()]
             selected = VersionSpecStrategy(python_spec).select(env_list)
             if not selected:
                 available = ", ".join(f"{e.name} ({e.version})" for e in env_list[:8])
@@ -404,9 +432,16 @@ class MvenvManager:
                 )
             return selected
 
-        selected = LatestVersionStrategy().select(env_list)
-        if selected:
-            return selected
+        best = manager.select_best(probe_capabilities=True, use_cache=True)
+        if best is not None:
+            return best
+
+        if norm_adapter != "all":
+            env_list = self.discover_interpreters(adapter=norm_adapter, probe_capabilities=True, use_cache=True)
+            if not env_list:
+                raise ValueError(f"No Python interpreters discovered for adapter '{adapter}'.")
+            return CapabilityScoreStrategy().select(env_list) or LatestVersionStrategy().select(env_list) or env_list[0]
+
         return self._current_python_env()
 
     def create_venv(self, req: MvenvCreateRequest) -> MvenvRecord:
@@ -586,7 +621,8 @@ class MvenvManager:
         source_names: List[str],
         target_name: str,
         delete_sources: bool = False,
-        repoint_apps: bool = True
+        repoint_apps: bool = True,
+        repoint_callback: Optional[Callable[[List[str], str], List[str]]] = None,
     ) -> Dict[str, Any]:
         """
         Merges multiple source managed virtual environments into a single target environment.
@@ -640,19 +676,10 @@ class MvenvManager:
             target_rec.size_bytes = MvenvCatalog._calculate_dir_size(Path(target_rec.path))
             self.catalog.save_record(target_rec)
 
-        # 3. Repoint installed applications if requested
+        # 3. Repoint installed applications via caller hook when supplied
         repointed_apps: List[str] = []
-        if repoint_apps:
-            try:
-                from auraseed.catalog.local import LocalAppManager
-                app_mgr = LocalAppManager()
-                for app in app_mgr.list_installed_apps():
-                    app_mvenv = app.get("mvenv_name")
-                    if app_mvenv in source_names and app_mvenv != target_name:
-                        app_mgr.relink_app_mvenv(app["name"], target_name, mvenv_manager=self)
-                        repointed_apps.append(app["name"])
-            except Exception:
-                pass
+        if repoint_apps and repoint_callback is not None:
+            repointed_apps = list(repoint_callback(list(source_names), target_name) or [])
 
         # 4. Calculate disk space to reclaim and prune sources
         reclaimed_bytes = 0
@@ -724,6 +751,25 @@ class MvenvManager:
         self.catalog.save_record(rec)
         return output_path
 
+    @staticmethod
+    def _validate_tar_members(members: List[tarfile.TarInfo], dest_root: Path) -> None:
+        resolved_root = dest_root.resolve()
+        for member in members:
+            raw_name = (member.name or "").strip()
+            if not raw_name or "\x00" in raw_name:
+                raise ValueError(f"Invalid archive member name: {member.name!r}")
+            posix_name = raw_name.replace("\\", "/")
+            if posix_name.startswith("/") or (len(posix_name) >= 2 and posix_name[1] == ":"):
+                raise ValueError(f"Absolute archive member path prohibited: {member.name!r}")
+            parts = [part for part in posix_name.split("/") if part and part != "."]
+            if ".." in parts:
+                raise ValueError(f"Archive path traversal detected: {member.name!r}")
+            if member.issym() or member.islnk() or member.isdev() or member.isfifo():
+                raise ValueError(f"Unsafe special/link archive member prohibited: {member.name!r}")
+            target_path = (resolved_root / posix_name).resolve()
+            if os.path.commonpath([str(resolved_root), str(target_path)]) != str(resolved_root):
+                raise ValueError(f"Archive member escapes target root: {member.name!r}")
+
     def import_bundle(self, bundle_path: Path, target_name: Optional[str] = None, force: bool = False) -> MvenvRecord:
         """
         Imports and unpackages an mvenv bundle into the local catalog.
@@ -747,16 +793,21 @@ class MvenvManager:
                 members = tar.getmembers()
                 if not members:
                     raise ValueError("Empty tar bundle.")
-                extracted_root_name = members[0].name.split("/")[0].split("\\")[0]
+                self._validate_tar_members(members, temp_extract)
+                extracted_root_name = members[0].name.replace("\\", "/").split("/")[0]
                 name = target_name or extracted_root_name
-                dest_dir = self.root_path / name
+                if not name or ".." in Path(name).parts or "/" in name or "\\" in name:
+                    raise ValueError(f"Invalid target mvenv name: {name!r}")
+                dest_dir = (self.root_path / name).resolve()
+                if os.path.commonpath([str(self.root_path.resolve()), str(dest_dir)]) != str(self.root_path.resolve()):
+                    raise ValueError(f"Target destination escapes mvenv root: {dest_dir}")
 
                 if dest_dir.exists():
                     if not force:
                         raise FileExistsError(f"Target mvenv directory already exists: {dest_dir}")
                     shutil.rmtree(dest_dir, ignore_errors=True)
 
-                tar.extractall(path=temp_extract)
+                tar.extractall(path=temp_extract, filter="data")
 
             extracted_item = temp_extract / extracted_root_name
             if extracted_item.exists() and extracted_item.is_dir():

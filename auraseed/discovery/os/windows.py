@@ -1,10 +1,14 @@
 import os
-import sys
 import subprocess
 from pathlib import Path
 from typing import Iterator, Set
 from auraseed.models import DiscoveredEnvironment
 from auraseed.discovery.base import BaseDiscoverer
+from auraseed.discovery.prober import (
+    is_windows_store_stub,
+    iter_env_search_paths,
+    sanitize_candidate_path,
+)
 
 class WindowsDiscoverer(BaseDiscoverer):
     """
@@ -102,17 +106,16 @@ class WindowsDiscoverer(BaseDiscoverer):
 
         # 2. Environmental Variables and Standard Fallbacks
         env_paths = []
-        if "PYTHONHOME" in os.environ:
-            env_paths.append(Path(os.environ["PYTHONHOME"]) / "python.exe")
+        for py_home in iter_env_search_paths(("PYTHONHOME",)):
+            env_paths.append(py_home / "python.exe")
 
-        path_var = os.environ.get("PATH", "")
-        for p in path_var.split(os.pathsep):
-            if p.strip():
-                env_paths.append(Path(p.strip()) / "python.exe")
+        for p_dir in iter_env_search_paths(("PATH",)):
+            env_paths.append(p_dir / "python.exe")
 
         local_app_data = os.environ.get("LOCALAPPDATA", "")
-        if local_app_data:
-            programs_python = Path(local_app_data) / "Programs" / "Python"
+        local_app_path = sanitize_candidate_path(local_app_data) if local_app_data else None
+        if local_app_path is not None:
+            programs_python = local_app_path / "Programs" / "Python"
             if programs_python.exists():
                 for d in programs_python.iterdir():
                     if d.is_dir() and d.name.lower().startswith("python"):
@@ -132,13 +135,8 @@ class WindowsDiscoverer(BaseDiscoverer):
         for exe in env_paths:
             try:
                 if exe.exists() and exe.is_file():
-                    # Skip WindowsApps 0-byte execution aliases if empty
-                    if "windowsapps" in str(exe).lower():
-                        try:
-                            if exe.stat().st_size == 0:
-                                continue
-                        except OSError:
-                            continue
+                    if is_windows_store_stub(exe):
+                        continue
 
                     exe_str = str(exe.resolve()).lower()
                     if exe_str not in seen_paths:

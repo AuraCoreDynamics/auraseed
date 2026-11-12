@@ -3,64 +3,87 @@ AuraSeed HTTP/REST API Server.
 Zero external runtime dependencies (Python standard library only).
 Complies with the independent, version-controlled OpenAPI specification.
 """
-import os
-import sys
 import json
-import base64
+import logging
+import os
 import shutil
 import urllib.parse
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from socketserver import ThreadingMixIn
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from typing import Optional, Dict, Any
+from socketserver import ThreadingMixIn
+from typing import Any, Callable, Dict, List, Optional
 
+from auraseed import __version__
+from auraseed.api.mcp import AuraSeedMcpServer
+from auraseed.grid.detector import detect_grid
 from auraseed.mvenv.manager import MvenvManager
 from auraseed.mvenv.models import MvenvCreateRequest
-from auraseed.grid.detector import detect_grid
-from auraseed.catalog.server import ServerAppCatalog
-from auraseed.api.mcp import AuraSeedMcpServer
+
+_LOG = logging.getLogger(__name__)
+
+
+def _allowed_loopback_origin(origin: Optional[str], host_header: Optional[str]) -> Optional[str]:
+    if not origin:
+        return None
+    parsed = urllib.parse.urlparse(origin)
+    hostname = (parsed.hostname or "").lower()
+    if hostname in ("127.0.0.1", "localhost", "::1") and parsed.scheme in ("http", "https"):
+        return origin
+    if host_header and parsed.netloc == host_header:
+        return origin
+    return None
 
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
+    mvenv_manager: MvenvManager
+    mcp_server: AuraSeedMcpServer
+    repoint_callback: Optional[Callable[[List[str], str], List[str]]] = None
 
 
 class AuraSeedApiHandler(BaseHTTPRequestHandler):
     """
-    Zero-dependency HTTP/REST API request handler for AuraSeed mvenv and app catalog operations.
+    Zero-dependency HTTP/REST API request handler for AuraSeed discovery and mvenv operations.
     """
-    server_version = "AuraSeed-API/1.0.0"
+    server_version = f"AuraSeed-API/{__version__}"
 
     @property
     def manager(self) -> MvenvManager:
-        return self.server.mvenv_manager  # type: ignore
+        srv = self.server
+        if not isinstance(srv, ThreadedHTTPServer):
+            raise RuntimeError("Invalid server instance for AuraSeedApiHandler")
+        return srv.mvenv_manager
 
     @property
-    def catalog(self) -> ServerAppCatalog:
-        return self.server.catalog_manager  # type: ignore
+    def repoint_callback(self) -> Optional[Callable[[List[str], str], List[str]]]:
+        return getattr(self.server, "repoint_callback", None)
 
-    def _send_json(self, status_code: int, data: Any):
+    def _send_cors_headers(self) -> None:
+        origin = _allowed_loopback_origin(self.headers.get("Origin"), self.headers.get("Host"))
+        if origin:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Mvenv-Name")
+
+    def _send_json(self, status_code: int, data: Any) -> None:
         payload = json.dumps(data, indent=2).encode("utf-8")
         self.send_response(status_code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-App-Filename, X-App-Manifest, X-Mvenv-Name")
+        self._send_cors_headers()
         self.end_headers()
         self.wfile.write(payload)
 
-    def _send_error(self, status_code: int, message: str):
+    def _send_error(self, status_code: int, message: str) -> None:
         self._send_json(status_code, {"error": message, "status": "error", "code": status_code})
 
-    def do_OPTIONS(self):
+    def do_OPTIONS(self) -> None:
         self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-App-Filename, X-App-Manifest, X-Mvenv-Name")
+        self._send_cors_headers()
         self.end_headers()
 
-    def do_GET(self):
+    def do_GET(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path.rstrip("/")
         query = urllib.parse.parse_qs(parsed.query)
@@ -71,12 +94,11 @@ class AuraSeedApiHandler(BaseHTTPRequestHandler):
             self._send_json(200, {
                 "status": "ok",
                 "service": "auraseed",
-                "version": "1.0.0",
+                "version": __version__,
                 "is_grid_connected": grid_info.is_on_grid if grid_info else False,
                 "node_id": grid_info.node_id if grid_info else None,
                 "mvenv_root": str(self.manager.root_path),
                 "mvenv_count": len(self.manager.list_venvs()),
-                "app_count": len(self.catalog.list_apps())
             })
             return
 
@@ -88,13 +110,12 @@ class AuraSeedApiHandler(BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json; charset=utf-8")
                 self.send_header("Content-Length", str(len(payload)))
-                self.send_header("Access-Control-Allow-Origin", "*")
+                self._send_cors_headers()
                 self.end_headers()
                 self.wfile.write(payload)
                 return
-            else:
-                self._send_error(404, "openapi.json artifact not found.")
-                return
+            self._send_error(404, "openapi.json artifact not found.")
+            return
 
         if path in ("/openapi.yaml", "/api/v1/openapi.yaml"):
             spec_file = Path(__file__).resolve().parent.parent / "openapi.yaml"
@@ -103,31 +124,39 @@ class AuraSeedApiHandler(BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header("Content-Type", "text/yaml; charset=utf-8")
                 self.send_header("Content-Length", str(len(payload)))
-                self.send_header("Access-Control-Allow-Origin", "*")
+                self._send_cors_headers()
                 self.end_headers()
                 self.wfile.write(payload)
                 return
-            else:
-                self._send_error(404, "openapi.yaml artifact not found.")
-                return
+            self._send_error(404, "openapi.yaml artifact not found.")
+            return
 
         # Discovery of host runtimes
         if path == "/api/v1/discovery":
             adapter = query.get("adapter", ["all"])[0]
+            probe = query.get("probe", ["false"])[0].lower() in ("1", "true", "yes")
+            use_cache = query.get("cache", ["true"])[0].lower() not in ("0", "false", "no")
             try:
-                envs = self.manager.discover_interpreters(adapter=adapter)
-            except Exception:
+                envs = self.manager.discover_interpreters(
+                    adapter=adapter,
+                    probe_capabilities=probe,
+                    use_cache=use_cache,
+                )
+            except Exception as exc:
+                _LOG.warning("Discovery failed for adapter %s, falling back to best interpreter: %s", adapter, exc)
                 envs = [self.manager._discover_best_interpreter()]
-            discovered = [
-                {
+            discovered: List[Dict[str, Any]] = []
+            for e in envs:
+                item: Dict[str, Any] = {
                     "id": e.id,
                     "name": e.name,
                     "executable": str(e.executable),
                     "version": e.version,
-                    "source_type": e.source_type
+                    "source_type": e.source_type,
                 }
-                for e in envs
-            ]
+                if e.capabilities is not None:
+                    item["capabilities"] = e.capabilities.to_dict()
+                discovered.append(item)
             self._send_json(200, {"interpreters": discovered})
             return
 
@@ -177,46 +206,9 @@ class AuraSeedApiHandler(BaseHTTPRequestHandler):
                     self._send_error(500, f"Failed to export bundle: {ex}")
                     return
 
-        # List Catalog Apps: /api/v1/apps
-        if path == "/api/v1/apps":
-            q_filter = query.get("q", [None])[0]
-            apps = self.catalog.list_apps(query=q_filter)
-            self._send_json(200, {"apps": apps, "total": len(apps)})
-            return
-
-        # Catalog App details or download: /api/v1/apps/{name}
-        if path.startswith("/api/v1/apps/"):
-            parts = path[len("/api/v1/apps/"):].split("/")
-            name = parts[0]
-
-            if len(parts) == 1:
-                app_meta = self.catalog.get_app(name)
-                if not app_meta:
-                    self._send_error(404, f"Application '{name}' not found in catalog.")
-                    return
-                self._send_json(200, app_meta)
-                return
-
-            if len(parts) == 2 and parts[1] == "download":
-                bundle_path = self.catalog.get_bundle_path(name)
-                if not bundle_path or not bundle_path.exists():
-                    self._send_error(404, f"Application package bundle for '{name}' not found.")
-                    return
-
-                file_size = os.path.getsize(bundle_path)
-                content_type = "application/zip" if bundle_path.suffix == ".zip" else "application/gzip"
-                self.send_response(200)
-                self.send_header("Content-Type", content_type)
-                self.send_header("Content-Disposition", f'attachment; filename="{bundle_path.name}"')
-                self.send_header("Content-Length", str(file_size))
-                self.end_headers()
-                with open(bundle_path, "rb") as f:
-                    shutil.copyfileobj(f, self.wfile)
-                return
-
         self._send_error(404, f"Endpoint not found: {path}")
 
-    def do_POST(self):
+    def do_POST(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path.rstrip("/")
 
@@ -244,7 +236,7 @@ class AuraSeedApiHandler(BaseHTTPRequestHandler):
                         responses.append(r)
                 if not responses:
                     self.send_response(202)
-                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self._send_cors_headers()
                     self.end_headers()
                     return
                 self._send_json(200, responses)
@@ -253,59 +245,10 @@ class AuraSeedApiHandler(BaseHTTPRequestHandler):
             resp = mcp_srv.handle_message(msg)
             if resp is None:
                 self.send_response(202)
-                self.send_header("Access-Control-Allow-Origin", "*")
+                self._send_cors_headers()
                 self.end_headers()
                 return
             self._send_json(200, resp)
-            return
-
-        # Deploy Application Package: POST /api/v1/apps
-        if path == "/api/v1/apps":
-            filename = self.headers.get("X-App-Filename")
-            manifest_header = self.headers.get("X-App-Manifest")
-            manifest_override = None
-            if manifest_header:
-                try:
-                    manifest_override = json.loads(manifest_header)
-                except Exception:
-                    pass
-
-            # Check if JSON payload with base64 bundle
-            content_type = self.headers.get("Content-Type", "")
-            if "application/json" in content_type:
-                try:
-                    data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
-                except Exception:
-                    self._send_error(400, "Invalid JSON payload.")
-                    return
-
-                if "bundle_base64" in data:
-                    try:
-                        bundle_bytes = base64.b64decode(data["bundle_base64"])
-                    except Exception:
-                        self._send_error(400, "Invalid base64 payload in bundle_base64.")
-                        return
-                    filename = data.get("filename") or filename
-                    manifest_override = data.get("manifest") or manifest_override
-                else:
-                    self._send_error(400, "JSON deployment must provide bundle_base64.")
-                    return
-            else:
-                bundle_bytes = body_bytes
-
-            if not bundle_bytes:
-                self._send_error(400, "Application package payload is empty.")
-                return
-
-            try:
-                record = self.catalog.publish_bundle(
-                    bundle_source=bundle_bytes,
-                    filename=filename,
-                    manifest_override=manifest_override
-                )
-                self._send_json(201, record)
-            except Exception as ex:
-                self._send_error(400, f"Failed to publish application: {ex}")
             return
 
         # Create new mvenv: POST /api/v1/mvenv
@@ -363,7 +306,8 @@ class AuraSeedApiHandler(BaseHTTPRequestHandler):
                     source_names=sources,
                     target_name=target,
                     delete_sources=delete_sources,
-                    repoint_apps=repoint_apps
+                    repoint_apps=repoint_apps,
+                    repoint_callback=self.repoint_callback,
                 )
                 self._send_json(200, res)
             except Exception as ex:
@@ -383,8 +327,10 @@ class AuraSeedApiHandler(BaseHTTPRequestHandler):
                 self._send_json(201, rec.to_dict())
             except Exception as ex:
                 if temp_bundle.exists():
-                    try: os.remove(temp_bundle)
-                    except OSError: pass
+                    try:
+                        os.remove(temp_bundle)
+                    except OSError as cleanup_ex:
+                        _LOG.warning("Failed to remove temporary bundle %s: %s", temp_bundle, cleanup_ex)
                 self._send_error(500, f"Failed to import bundle: {ex}")
             return
 
@@ -415,19 +361,9 @@ class AuraSeedApiHandler(BaseHTTPRequestHandler):
 
         self._send_error(404, f"Endpoint not found: {path}")
 
-    def do_DELETE(self):
+    def do_DELETE(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path.rstrip("/")
-
-        # Delete catalog app: DELETE /api/v1/apps/{name}
-        if path.startswith("/api/v1/apps/"):
-            name = path[len("/api/v1/apps/"):].split("/")[0]
-            deleted = self.catalog.delete_app(name)
-            if deleted:
-                self._send_json(200, {"success": True, "message": f"Application '{name}' deleted from catalog."})
-            else:
-                self._send_error(404, f"Application '{name}' not found in catalog.")
-            return
 
         # Delete mvenv: DELETE /api/v1/mvenv/{name}
         if path.startswith("/api/v1/mvenv/"):
@@ -441,8 +377,7 @@ class AuraSeedApiHandler(BaseHTTPRequestHandler):
 
         self._send_error(404, f"Endpoint not found: {path}")
 
-    def log_message(self, format, *args):
-        # Quiet log unless DEBUG is enabled
+    def log_message(self, format: str, *args: Any) -> None:
         if os.environ.get("AURASEED_DEBUG") == "1":
             super().log_message(format, *args)
 
@@ -473,7 +408,8 @@ class AuraSeedMasService:
 
     @auragrid_method(name="ListMenvs")
     def list_mvenvs(self) -> dict:
-        return {"mvenvs": [r.to_dict() for r in self.manager.list_venvs()], "count": len(self.manager.list_venvs())}
+        venvs = self.manager.list_venvs()
+        return {"mvenvs": [r.to_dict() for r in venvs], "count": len(venvs)}
 
     @auragrid_method(name="GetHealth")
     def get_health(self) -> dict:
@@ -486,30 +422,31 @@ class AuraSeedMasService:
 
 
 def create_api_server(
-    host: str = "0.0.0.0",
-    port: int = 7099,
+    host: Optional[str] = None,
+    port: Optional[int] = None,
     manager: Optional[MvenvManager] = None,
-    catalog: Optional[ServerAppCatalog] = None
+    repoint_callback: Optional[Callable[[List[str], str], List[str]]] = None,
 ) -> ThreadedHTTPServer:
+    bind_host = host or os.environ.get("AURASEED_BIND_HOST", "127.0.0.1")
+    bind_port = int(port if port is not None else os.environ.get("AURASEED_PORT", "7099"))
     m = manager or MvenvManager()
-    c = catalog or ServerAppCatalog(root_dir=m.root_path / "catalog")
-    server = ThreadedHTTPServer((host, port), AuraSeedApiHandler)
-    server.mvenv_manager = m  # type: ignore
-    server.catalog_manager = c  # type: ignore
-    server.mcp_server = AuraSeedMcpServer(m)  # type: ignore
+    server = ThreadedHTTPServer((bind_host, bind_port), AuraSeedApiHandler)
+    server.mvenv_manager = m
+    server.mcp_server = AuraSeedMcpServer(m)
+    server.repoint_callback = repoint_callback
     return server
 
 
 def run_api_server(
-    host: str = "0.0.0.0",
-    port: int = 7099,
+    host: Optional[str] = None,
+    port: Optional[int] = None,
     manager: Optional[MvenvManager] = None,
-    catalog: Optional[ServerAppCatalog] = None
-):
-    server = create_api_server(host, port, manager, catalog)
-    print(f"[AuraSeed API] Listening on http://{host}:{port}/")
+    repoint_callback: Optional[Callable[[List[str], str], List[str]]] = None,
+) -> None:
+    server = create_api_server(host=host, port=port, manager=manager, repoint_callback=repoint_callback)
+    bind_host, actual_port = server.server_address[:2]
+    print(f"[AuraSeed API] Listening on http://{bind_host}:{actual_port}/")
     print(f"[AuraSeed API] Mvenv root: {server.mvenv_manager.root_path}")
-    print(f"[AuraSeed API] Catalog root: {server.catalog_manager.root_dir}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
