@@ -2,7 +2,7 @@
   "$schema": "https://auragrid.io/schemas/app.manifest.schema.json",
   "appId": "auraseed",
   "name": "AuraSeed - Sovereign Runtime & MVenv Manager",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Zero-privilege Python runtime discovery, capability probing, sovereign virtual environment (mvenv) engine, and Start Menu / launcher lifecycle manager.",
   "services": [
     {

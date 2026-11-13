@@ -909,7 +909,7 @@ def main() -> int:
         from auraseed.models import IsolationStatus, SelectedInterpreterContext
         now_str = datetime.now(timezone.utc).isoformat()
         manifest = SeedManifest(
-            seed_version="1.1.0",
+            seed_version="1.1.1",
             created_at=now_str,
             selected_interpreter=SelectedInterpreterContext(
                 executable=str(selected_env.executable),

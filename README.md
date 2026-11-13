@@ -2,7 +2,7 @@
 
 **Zero-privilege Python runtime discovery, capability probing, and sovereign environment (`mvenv`) seeding engine.**
 
-AuraSeed (`v1.1.0`) is a zero-dependency (`dependencies = []`), cross-platform Python library and CLI tool focused strictly on:
+AuraSeed (`v1.1.1`) is a zero-dependency (`dependencies = []`), cross-platform Python library and CLI tool focused strictly on:
 - Auto-discovering existing Python runtimes across Windows Registry (PEP 514), Linux/macOS system locations, modern toolchain managers (`uv`, `pixi`, `pyenv`/`pyenv-win`, `hatch`, `pdm`, `scoop`, `winget`, Visual Studio Shared), and embedded application runtimes (`ArcGIS Pro`, `QGIS`, `OSGeo4W`, `Blender`, `FreeCAD`).
 - Isolated capability probing (`python -I -c ...`) and atomic mtime/size-keyed discovery caching with multi-criteria scoring.
 - Creating and managing sovereign, relocatable virtual environments (`mvenv`s) without administrative privileges.
