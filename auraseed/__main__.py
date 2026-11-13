@@ -715,6 +715,7 @@ def handle_install_self_cli(args: List[str]) -> int:
     parser.add_argument("--editable", action="store_true", help="Install in editable mode")
     parser.add_argument("--no-register", action="store_true", help="Skip HKCU registry and env var registration")
     parser.add_argument("--add-to-path", action="store_true", help="Add standalone bin directory to HKCU PATH")
+    parser.add_argument("--no-start-menu", action="store_true", help="Skip Start Menu shortcut registration")
     parser.add_argument("--json", action="store_true", help="Output as JSON")
 
     parsed = parser.parse_args(args)
@@ -725,12 +726,67 @@ def handle_install_self_cli(args: List[str]) -> int:
         base_python=parsed.base_python,
         register_os=not parsed.no_register,
         add_to_path=bool(parsed.add_to_path),
+        create_start_menu=not parsed.no_start_menu,
         editable=bool(parsed.editable),
     )
     if parsed.json:
         print(json.dumps(report, indent=2))
     else:
         print(f"[AuraSeed] Installed standalone -> {report['install_dir']} (python={report['python_path']})")
+    return 0
+
+
+def handle_register_launcher_cli(args: List[str]) -> int:
+    from auraseed.lifecycle import register_start_menu_launcher
+
+    parser = argparse.ArgumentParser(
+        prog="auraseed register-launcher",
+        description="Register an application launcher in the user's Start Menu and refresh OS shell cache.",
+    )
+    parser.add_argument("app_name", help="Application identifier")
+    parser.add_argument("target", help="Launcher executable or script path")
+    parser.add_argument("--display-name", default=None, help="Display name in Start Menu")
+    parser.add_argument("--args", dest="arguments", default="", help="Optional command arguments")
+    parser.add_argument("--workdir", default=None, help="Working directory")
+    parser.add_argument("--description", default="", help="Shortcut description")
+    parser.add_argument("--subfolder", default="AuraSeed", help="Start Menu subfolder")
+    parser.add_argument("--no-refresh", action="store_true", help="Skip OS shell cache refresh")
+    parser.add_argument("--json", action="store_true", help="Output as JSON")
+
+    parsed = parser.parse_args(args)
+    res = register_start_menu_launcher(
+        app_name=parsed.app_name,
+        target_path=Path(parsed.target),
+        display_name=parsed.display_name,
+        arguments=parsed.arguments,
+        working_dir=Path(parsed.workdir) if parsed.workdir else None,
+        description=parsed.description,
+        subfolder=parsed.subfolder or None,
+        refresh_cache=not parsed.no_refresh,
+    )
+    if parsed.json:
+        print(json.dumps(res, indent=2))
+    else:
+        print(f"[AuraSeed] Registered Start Menu launcher: {res['shortcut_path']}")
+    return 0
+
+
+def handle_refresh_cache_cli(args: List[str]) -> int:
+    from auraseed.lifecycle import refresh_os_shell_cache
+
+    parser = argparse.ArgumentParser(
+        prog="auraseed refresh-os-cache",
+        description="Trigger OS Start Menu / shell icon & shortcut cache refresh.",
+    )
+    parser.add_argument("--dir", dest="target_dir", default=None, help="Optional directory to notify")
+    parser.add_argument("--json", action="store_true", help="Output as JSON")
+
+    parsed = parser.parse_args(args)
+    res = refresh_os_shell_cache(Path(parsed.target_dir) if parsed.target_dir else None)
+    if parsed.json:
+        print(json.dumps(res, indent=2))
+    else:
+        print(f"[AuraSeed] Refreshed OS shell cache ({res.get('method')}): {res.get('target_dir')}")
     return 0
 
 
@@ -762,6 +818,10 @@ def main() -> int:
             return handle_cleanup_cli(["self", *sys.argv[2:]])
         if early_cmd == "install-self":
             return handle_install_self_cli(sys.argv[2:])
+        if early_cmd == "register-launcher":
+            return handle_register_launcher_cli(sys.argv[2:])
+        if early_cmd == "refresh-os-cache":
+            return handle_refresh_cache_cli(sys.argv[2:])
 
     from auraseed.provision.config_manager import apply_user_configs
     quiet_mode = ("--json" in sys.argv or "--mcp" in sys.argv)

@@ -275,6 +275,200 @@ def _remove_app_from_catalog_json(catalog_path: Path, app_name: str) -> bool:
     return changed
 
 
+def resolve_user_start_menu_dir(start_menu_dir: Optional[Path] = None) -> Path:
+    """Resolve user's Start Menu Programs (or OS application menu) directory."""
+    if start_menu_dir is not None:
+        return Path(start_menu_dir).resolve()
+
+    home = Path.home()
+    sys_name = platform.system().lower()
+    if sys_name == "windows":
+        import winreg
+
+        for subkey in (
+            r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders",
+            r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders",
+        ):
+            try:
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, subkey, 0, winreg.KEY_READ) as rk:
+                    raw_val, _ = winreg.QueryValueEx(rk, "Programs")
+                    expanded = os.path.expandvars(str(raw_val or "").strip())
+                    if expanded:
+                        return Path(expanded).resolve()
+            except OSError:
+                continue
+        return (_default_roaming_app_data(home) / "Microsoft" / "Windows" / "Start Menu" / "Programs").resolve()
+
+    if sys_name == "darwin":
+        return (home / "Applications").resolve()
+
+    xdg_data = os.environ.get("XDG_DATA_HOME")
+    base = Path(xdg_data).resolve() if xdg_data else (home / ".local" / "share").resolve()
+    return (base / "applications").resolve()
+
+
+def refresh_os_shell_cache(target_dir: Optional[Path] = None) -> Dict[str, Any]:
+    """Trigger OS shell / Start Menu / desktop-entry cache refresh without ctypes/winapi."""
+    resolved_dir = Path(target_dir).resolve() if target_dir is not None else resolve_user_start_menu_dir()
+    if resolved_dir.exists():
+        try:
+            os.utime(resolved_dir, None)
+        except OSError:
+            pass
+
+    sys_name = platform.system().lower()
+    if sys_name == "windows":
+        ps_exe = shutil.which("powershell.exe") or shutil.which("powershell")
+        if ps_exe:
+            ps_script = (
+                "Add-Type -TypeDefinition @'\n"
+                "using System;\n"
+                "using System.Runtime.InteropServices;\n"
+                "public static class AuraShellRefresh {\n"
+                "  [DllImport(\"shell32.dll\", CharSet = CharSet.Unicode)]\n"
+                "  public static extern void SHChangeNotify(uint wEventId, uint uFlags, string dwItem1, IntPtr dwItem2);\n"
+                "  [DllImport(\"user32.dll\", SetLastError = true, CharSet = CharSet.Unicode)]\n"
+                "  public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, IntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out IntPtr lpdwResult);\n"
+                "}\n"
+                "'@;\n"
+                "$dir = $env:AURASEED_REFRESH_DIR;\n"
+                "if ($dir -and (Test-Path $dir)) { [AuraShellRefresh]::SHChangeNotify(0x00001000, 0x0005, $dir, [IntPtr]::Zero) }\n"
+                "[AuraShellRefresh]::SHChangeNotify(0x08000000, 0x0000, $null, [IntPtr]::Zero);\n"
+                "$res = [IntPtr]::Zero;\n"
+                "[AuraShellRefresh]::SendMessageTimeout([IntPtr]0xffff, 0x001A, [IntPtr]::Zero, 'Environment', 2, 1000, [ref]$res) | Out-Null\n"
+            )
+            env = os.environ.copy()
+            env["AURASEED_REFRESH_DIR"] = str(resolved_dir)
+            try:
+                proc = subprocess.run(
+                    [ps_exe, "-NoProfile", "-NonInteractive", "-Command", ps_script],
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    shell=False,
+                    timeout=15,
+                )
+                if proc.returncode == 0:
+                    return {"refreshed": True, "method": "SHChangeNotify+WM_SETTINGCHANGE", "target_dir": str(resolved_dir)}
+            except (OSError, subprocess.SubprocessError):
+                pass
+        return {"refreshed": True, "method": "utime_fallback", "target_dir": str(resolved_dir)}
+
+    if sys_name == "linux":
+        updater = shutil.which("update-desktop-database")
+        if updater and resolved_dir.exists():
+            try:
+                subprocess.run([updater, str(resolved_dir)], capture_output=True, text=True, shell=False, timeout=15)
+                return {"refreshed": True, "method": "update-desktop-database", "target_dir": str(resolved_dir)}
+            except (OSError, subprocess.SubprocessError):
+                pass
+        return {"refreshed": True, "method": "utime", "target_dir": str(resolved_dir)}
+
+    return {"refreshed": True, "method": "utime", "target_dir": str(resolved_dir)}
+
+
+def register_start_menu_launcher(
+    app_name: str,
+    target_path: Path,
+    *,
+    display_name: Optional[str] = None,
+    arguments: str = "",
+    working_dir: Optional[Path] = None,
+    description: str = "",
+    subfolder: Optional[str] = "AuraSeed",
+    start_menu_dir: Optional[Path] = None,
+    refresh_cache: bool = True,
+) -> Dict[str, Any]:
+    """Register an application or AuraSeed launcher in the user's Start Menu and refresh OS cache."""
+    safe_id = _validate_name(app_name, "app_name")
+    label = (display_name or safe_id).strip()
+    safe_label = "".join(ch if ch not in '<>:"/\\|?*\x00' else "_" for ch in label).strip() or safe_id
+    target = Path(target_path).resolve()
+    workdir = Path(working_dir).resolve() if working_dir is not None else target.parent
+
+    sm_root = resolve_user_start_menu_dir(start_menu_dir)
+    sys_name = platform.system().lower()
+    if sys_name == "windows" and subfolder:
+        safe_sub = _validate_name(subfolder, "subfolder")
+        menu_dir = (sm_root / safe_sub).resolve()
+    else:
+        menu_dir = sm_root
+    menu_dir.mkdir(parents=True, exist_ok=True)
+
+    shortcut_path: Path
+    if sys_name == "windows":
+        lnk_path = menu_dir / f"{safe_label}.lnk"
+        ps_exe = shutil.which("powershell.exe") or shutil.which("powershell")
+        created_lnk = False
+        if ps_exe:
+            ps_script = (
+                "$ws = New-Object -ComObject WScript.Shell; "
+                "$sc = $ws.CreateShortcut($env:AURASEED_LNK_PATH); "
+                "$sc.TargetPath = $env:AURASEED_LNK_TARGET; "
+                "if ($env:AURASEED_LNK_ARGS) { $sc.Arguments = $env:AURASEED_LNK_ARGS } "
+                "if ($env:AURASEED_LNK_WORKDIR) { $sc.WorkingDirectory = $env:AURASEED_LNK_WORKDIR } "
+                "if ($env:AURASEED_LNK_DESC) { $sc.Description = $env:AURASEED_LNK_DESC } "
+                "$sc.Save()"
+            )
+            env = os.environ.copy()
+            env["AURASEED_LNK_PATH"] = str(lnk_path)
+            env["AURASEED_LNK_TARGET"] = str(target)
+            env["AURASEED_LNK_ARGS"] = arguments or ""
+            env["AURASEED_LNK_WORKDIR"] = str(workdir)
+            env["AURASEED_LNK_DESC"] = description or label
+            try:
+                res = subprocess.run(
+                    [ps_exe, "-NoProfile", "-NonInteractive", "-Command", ps_script],
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    shell=False,
+                    timeout=15,
+                )
+                created_lnk = res.returncode == 0 and lnk_path.exists()
+            except (OSError, subprocess.SubprocessError):
+                created_lnk = False
+
+        if created_lnk:
+            shortcut_path = lnk_path
+        else:
+            cmd_path = menu_dir / f"{safe_label}.cmd"
+            args_part = f" {arguments}" if arguments else ""
+            cmd_path.write_text(f'@echo off\r\ncall "{target}"{args_part} %*\r\n', encoding="utf-8")
+            shortcut_path = cmd_path
+    elif sys_name == "darwin":
+        cmd_path = menu_dir / f"{safe_label}.command"
+        args_part = f" {arguments}" if arguments else ""
+        cmd_path.write_text(f'#!/bin/sh\ncd "{workdir}" || exit 1\nexec "{target}"{args_part} "$@"\n', encoding="utf-8")
+        os.chmod(cmd_path, 0o755)
+        shortcut_path = cmd_path
+    else:
+        desktop_file = menu_dir / f"auraseed-{safe_id}.desktop"
+        exec_line = f'"{target}" {arguments}'.strip()
+        desktop_file.write_text(
+            "[Desktop Entry]\n"
+            "Type=Application\n"
+            f"Name={label}\n"
+            f"Comment={description or label}\n"
+            f"Exec={exec_line}\n"
+            f"Path={workdir}\n"
+            "Terminal=false\n"
+            "Categories=Development;Utility;\n",
+            encoding="utf-8",
+        )
+        os.chmod(desktop_file, 0o755)
+        shortcut_path = desktop_file
+
+    cache_info = refresh_os_shell_cache(menu_dir) if refresh_cache else {"refreshed": False}
+    return {
+        "app_name": safe_id,
+        "display_name": label,
+        "shortcut_path": str(shortcut_path),
+        "menu_dir": str(menu_dir),
+        "cache_refresh": cache_info,
+    }
+
+
 def _resolve_desktop_dirs(desktop_dir: Optional[Path] = None) -> List[Path]:
     if desktop_dir is not None:
         return [Path(desktop_dir)]
@@ -325,18 +519,13 @@ def _cleanup_shortcuts_for_names(
                     candidates.append(d_dir / f"{name}{ext}")
                     candidates.append(d_dir / f"auraseed-{name}{ext}")
 
-    if start_menu_dir is not None:
-        sm_dir = Path(start_menu_dir)
-    elif platform.system().lower() == "windows":
-        sm_dir = _default_roaming_app_data(home) / "Microsoft" / "Windows" / "Start Menu" / "Programs"
-    else:
-        sm_dir = home / ".local" / "share" / "applications"
-
+    sm_dir = resolve_user_start_menu_dir(start_menu_dir)
     if sm_dir.exists():
         for name in name_set:
-            for ext in (".cmd", ".bat", ".lnk", ".desktop"):
+            for ext in (".cmd", ".bat", ".lnk", ".desktop", ".command"):
                 candidates.append(sm_dir / f"{name}{ext}")
                 candidates.append(sm_dir / f"auraseed-{name}{ext}")
+                candidates.append(sm_dir / "AuraSeed" / f"{name}{ext}")
         seed_sm = sm_dir / "AuraSeed"
         if "auraseed" in name_set and seed_sm.exists() and seed_sm.is_dir():
             shutil.rmtree(seed_sm, ignore_errors=True)
@@ -356,6 +545,9 @@ def _cleanup_shortcuts_for_names(
                 removed.append(str(cand))
         except OSError:
             pass
+
+    if removed:
+        refresh_os_shell_cache(sm_dir)
 
     return removed
 
@@ -646,6 +838,8 @@ def install_auraseed_standalone(
     base_python: Optional[str] = None,
     register_os: bool = True,
     add_to_path: bool = False,
+    create_start_menu: bool = True,
+    start_menu_dir: Optional[Path] = None,
     editable: bool = False,
     home_dir: Optional[Path] = None,
     local_app_data: Optional[Path] = None,
@@ -781,10 +975,27 @@ def install_auraseed_standalone(
         if add_to_path:
             path_updated = _win_add_path_dir(bin_dir, env_subkey=env_reg_subkey)
 
+    start_menu_info: Optional[Dict[str, Any]] = None
+    if create_start_menu:
+        launcher_bin = (bin_dir / "auraseed.bat") if is_win else (bin_dir / "auraseed")
+        start_menu_info = register_start_menu_launcher(
+            app_name="auraseed",
+            target_path=launcher_bin,
+            display_name="AuraSeed",
+            arguments="gui",
+            working_dir=data_root,
+            description="AuraSeed MVenv Manager & Runtime Discovery",
+            subfolder="AuraSeed",
+            start_menu_dir=start_menu_dir,
+            refresh_cache=True,
+        )
+
     return {
         **receipt,
         "registered_keys": registered_keys,
         "path_updated": path_updated,
+        "start_menu_shortcut": start_menu_info.get("shortcut_path") if start_menu_info else None,
+        "cache_refresh": start_menu_info.get("cache_refresh") if start_menu_info else None,
         "receipt_path": str(receipt_path),
     }
 

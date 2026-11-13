@@ -173,3 +173,31 @@ def test_cleanup_auraseed_user_full_sanitization(tmp_path: Path, monkeypatch) ->
         if win_test_env:
             _win_delete_registry_tree(win_test_env)
 
+
+def test_register_start_menu_launcher_and_refresh_cache(tmp_path: Path) -> None:
+    from auraseed.lifecycle import register_start_menu_launcher
+
+    sm_root = tmp_path / "StartMenu" / "Programs"
+    target = tmp_path / "bin" / ("demo.bat" if platform.system().lower() == "windows" else "demo")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("@echo off\r\necho ok\r\n", encoding="utf-8")
+
+    res = register_start_menu_launcher(
+        app_name="demo-app",
+        target_path=target,
+        display_name="Demo App",
+        arguments="--port 8123",
+        working_dir=tmp_path,
+        description="Demo App Launcher",
+        subfolder="AuraSeed",
+        start_menu_dir=sm_root,
+        refresh_cache=True,
+    )
+    sc_path = Path(res["shortcut_path"])
+    assert sc_path.exists()
+    assert res["cache_refresh"]["refreshed"] is True
+    if platform.system().lower() == "windows":
+        assert sc_path.parent == (sm_root / "AuraSeed").resolve()
+        assert sc_path.suffix.lower() in (".lnk", ".cmd")
+
+
