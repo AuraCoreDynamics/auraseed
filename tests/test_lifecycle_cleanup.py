@@ -8,7 +8,6 @@ import uuid
 from pathlib import Path
 
 from auraseed.lifecycle import (
-    _win_cleanup_hkcu_env,
     _win_delete_registry_tree,
     cleanup_auraseed_user,
     cleanup_legacy_app,

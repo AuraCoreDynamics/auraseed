@@ -1,4 +1,3 @@
-import os
 import sys
 import shutil
 import unittest
@@ -28,6 +27,10 @@ class TestCLIIntegration(unittest.TestCase):
                     pass
 
     def test_cli_qgis_seeding_and_relaunch(self):
+        from auraseed.discovery.adapters.qgis import QgisDiscoverer
+        if not list(QgisDiscoverer().discover()):
+            self.skipTest("Requires a live QGIS installation on the host system.")
+
         # Create a small relaunch script
         output_marker = self.temp_root / "relaunch_output.txt"
         if output_marker.exists():

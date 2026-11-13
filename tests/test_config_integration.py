@@ -40,12 +40,15 @@ class TestConfigIntegration(unittest.TestCase):
 
                 # 1. First run: create files
                 res1 = apply_user_configs(test_cfg, auto_yes=True)
+                self.assertTrue(res1["pip"]["created"])
                 pip_file = appdata / "pip" / "pip.ini"
                 condarc = Path.home() / ".condarc"  # Path.home() uses USERPROFILE on Windows
 
                 self.assertTrue(pip_file.exists())
+                self.assertTrue(condarc.exists())
                 self.assertIn("index-url = https://nexus.corp.net", pip_file.read_text(encoding="utf-8"))
                 self.assertIn("proxy = http://proxy.corp.net:3128", pip_file.read_text(encoding="utf-8"))
+                self.assertIn("https://conda.corp.net/main", condarc.read_text(encoding="utf-8"))
 
                 # 2. Second run: update with backup
                 res2 = apply_user_configs(test_cfg, auto_yes=True)

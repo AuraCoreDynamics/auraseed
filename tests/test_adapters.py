@@ -9,15 +9,36 @@ class TestDiscoveryAdapters(unittest.TestCase):
     def test_qgis_discovery(self):
         discoverer = QgisDiscoverer()
         envs = list(discoverer.discover())
-        self.assertGreater(len(envs), 0, "Expected at least one QGIS installation to be discovered.")
-        qgis_env = envs[0]
-        self.assertIn("QGIS", qgis_env.name)
-        self.assertEqual(qgis_env.source_type, "qgis_adapter")
-        self.assertTrue(qgis_env.executable.exists())
-        self.assertIn("target_modules", qgis_env.metadata)
-        self.assertIn("qgis", qgis_env.metadata["target_modules"])
+        if envs:
+            qgis_env = envs[0]
+            self.assertIn("QGIS", qgis_env.name)
+            self.assertEqual(qgis_env.source_type, "qgis_adapter")
+            self.assertTrue(qgis_env.executable.exists())
+            self.assertIn("target_modules", qgis_env.metadata)
+            self.assertIn("qgis", qgis_env.metadata["target_modules"])
+        else:
+            # When host system has no installed QGIS, test discovery algorithm on mock layout
+            import tempfile
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmp = Path(tmpdir)
+                py_dir = tmp / "apps" / "Python312"
+                py_dir.mkdir(parents=True)
+                (py_dir / "python.exe").write_text("", encoding="utf-8")
+                (tmp / "apps" / "qgis-ltr" / "python").mkdir(parents=True)
+                mock_disc = QgisDiscoverer(search_paths=[tmp])
+                mock_envs = list(mock_disc.discover())
+                self.assertGreater(len(mock_envs), 0, "Expected mock QGIS installation to be discovered.")
+                qgis_env = mock_envs[0]
+                self.assertIn("QGIS", qgis_env.name)
+                self.assertEqual(qgis_env.source_type, "qgis_adapter")
+                self.assertTrue(qgis_env.executable.exists())
+                self.assertIn("target_modules", qgis_env.metadata)
+                self.assertIn("qgis", qgis_env.metadata["target_modules"])
 
     def test_windows_discovery(self):
+        import platform
+        if platform.system().lower() != "windows":
+            self.skipTest("Windows discovery only available on Windows")
         discoverer = WindowsDiscoverer()
         envs = list(discoverer.discover())
         self.assertGreater(len(envs), 0, "Expected at least one Windows Python environment to be discovered.")

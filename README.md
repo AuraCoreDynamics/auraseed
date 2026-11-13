@@ -130,6 +130,34 @@ from auraseed.gui import MvenvManagerPanel
 panel = MvenvManagerPanel(parent_frame, repoint_callback=my_repoint_fn)
 ```
 
+## Testing & Local CI Verification
+
+To guarantee CI/CD parity, all changes must pass the exact same checks locally before pushing that GitHub Actions executes in CI:
+
+1. **All-in-One Pre-Push Verification Runner**:
+   ```bash
+   python scripts/run_ci_checks.py
+   ```
+2. **Individual Verification Steps**:
+   ```bash
+   # Linting
+   ruff check .
+
+   # Unit and integration tests
+   pytest tests/ -v
+
+   # Package distribution build
+   python -m build
+
+   # Distribution metadata validation
+   twine check dist/*
+   ```
+
+### CI/CD Architecture & GitHub Workflows
+- **`.github/workflows/ci.yml`**: Runs on all pushes and pull requests to `main`. Tests matrix across Python `3.10`, `3.11`, `3.12`, and `3.13` on Ubuntu runners, validates linting via `ruff`, and verifies package build integrity via `twine`.
+- **`.github/workflows/publish.yml`**: Triggers on GitHub Release publication and manual `workflow_dispatch`. Uses PyPA Trusted Publishing (OIDC) with `skip-existing: true` and a dedicated build validation step before uploading to PyPI.
+
 ## Documentation
 - [Architecture Guide](docs/architecture.md): Deep dive into Operational Sovereignty and Host Isolation.
 - [Integration Guide](docs/integration_guide.md): How to embed AuraSeed into your own CI/CD pipelines or parent applications.
+

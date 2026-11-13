@@ -45,7 +45,13 @@ class TestWindowsIntegrationAndSovereignty(unittest.TestCase):
         if (sys_dir / "DLLs").exists():
             shutil.copytree(sys_dir / "DLLs", self.disposable_src / "DLLs", dirs_exist_ok=True)
         if (sys_dir / "Lib").exists():
-            shutil.copytree(sys_dir / "Lib", self.disposable_src / "Lib", dirs_exist_ok=True)
+            shutil.copytree(
+                sys_dir / "Lib",
+                self.disposable_src / "Lib",
+                dirs_exist_ok=True,
+                ignore=shutil.ignore_patterns("site-packages"),
+            )
+        (self.disposable_src / "Lib" / "site-packages").mkdir(parents=True, exist_ok=True)
         for zip_f in sys_dir.glob("python*.zip"):
             shutil.copy2(zip_f, self.disposable_src / zip_f.name)
 

@@ -1,5 +1,5 @@
 import unittest
-from auraseed.mvenv.models import MvenvRecord, MvenvCreateRequest, MvenvBundleMetadata
+from auraseed.mvenv.models import MvenvRecord, MvenvBundleMetadata
 
 
 class TestMvenvModels(unittest.TestCase):

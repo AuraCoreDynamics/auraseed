@@ -1,14 +1,11 @@
 import unittest
 import tempfile
-import json
-import os
 import shutil
 from pathlib import Path
 
 from auraseed.provision.config_manager import (
     generate_pip_ini,
     generate_condarc,
-    apply_user_configs,
     backup_file
 )
 

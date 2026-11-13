@@ -11,7 +11,7 @@ import shutil
 import platform
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 
 
 def get_pip_config_path() -> Path:

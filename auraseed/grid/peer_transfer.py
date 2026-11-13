@@ -3,7 +3,6 @@ import logging
 import os
 import urllib.error
 import urllib.request
-from pathlib import Path
 from typing import Any, Dict, Optional
 
 from auraseed.mvenv.manager import MvenvManager

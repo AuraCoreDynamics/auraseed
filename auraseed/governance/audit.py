@@ -1,5 +1,5 @@
 from typing import List
-from auraseed.models import VersionAuditReport, DiscoveredEnvironment
+from auraseed.models import VersionAuditReport
 from auraseed.discovery.manager import DiscoveryManager
 
 def audit_host_updates(adapter_name: str, discovery_manager: DiscoveryManager, known_version_ids: List[str]) -> VersionAuditReport:

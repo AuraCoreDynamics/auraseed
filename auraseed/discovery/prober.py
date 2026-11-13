@@ -1,7 +1,6 @@
 """
 Zero-dependency Python runtime capability prober and path sanitizer.
 """
-import importlib.util
 import json
 import os
 import subprocess

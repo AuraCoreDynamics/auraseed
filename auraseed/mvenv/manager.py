@@ -516,7 +516,7 @@ class MvenvManager:
             try:
                 isolation = HostIsolationEngine()
                 isolation.isolate(target_env, dest_dir)
-            except Exception as e:
+            except Exception:
                 # If isolation throws on unusual distribution, continue with scaffold
                 pass
 
