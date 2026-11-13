@@ -17,4 +17,4 @@ auraseed = "auraseed.__main__:main"
 include = ["auraseed*"]
 
 [tool.setuptools.package-data]
-auraseed = ["openapi.json", "openapi.yaml"]
+auraseed = ["openapi.json", "openapi.yaml", "assets/*.ico", "assets/*.png"]

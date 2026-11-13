@@ -375,6 +375,7 @@ def register_start_menu_launcher(
     arguments: str = "",
     working_dir: Optional[Path] = None,
     description: str = "",
+    icon_path: Optional[Path] = None,
     subfolder: Optional[str] = "AuraSeed",
     start_menu_dir: Optional[Path] = None,
     refresh_cache: bool = True,
@@ -385,6 +386,11 @@ def register_start_menu_launcher(
     safe_label = "".join(ch if ch not in '<>:"/\\|?*\x00' else "_" for ch in label).strip() or safe_id
     target = Path(target_path).resolve()
     workdir = Path(working_dir).resolve() if working_dir is not None else target.parent
+    resolved_icon: Optional[Path] = None
+    if icon_path is not None:
+        cand_icon = Path(icon_path).resolve()
+        if cand_icon.exists() and cand_icon.is_file():
+            resolved_icon = cand_icon
 
     sm_root = resolve_user_start_menu_dir(start_menu_dir)
     sys_name = platform.system().lower()
@@ -408,6 +414,7 @@ def register_start_menu_launcher(
                 "if ($env:AURASEED_LNK_ARGS) { $sc.Arguments = $env:AURASEED_LNK_ARGS } "
                 "if ($env:AURASEED_LNK_WORKDIR) { $sc.WorkingDirectory = $env:AURASEED_LNK_WORKDIR } "
                 "if ($env:AURASEED_LNK_DESC) { $sc.Description = $env:AURASEED_LNK_DESC } "
+                "if ($env:AURASEED_LNK_ICON) { $sc.IconLocation = $env:AURASEED_LNK_ICON } "
                 "$sc.Save()"
             )
             env = os.environ.copy()
@@ -416,6 +423,7 @@ def register_start_menu_launcher(
             env["AURASEED_LNK_ARGS"] = arguments or ""
             env["AURASEED_LNK_WORKDIR"] = str(workdir)
             env["AURASEED_LNK_DESC"] = description or label
+            env["AURASEED_LNK_ICON"] = str(resolved_icon) if resolved_icon is not None else ""
             try:
                 res = subprocess.run(
                     [ps_exe, "-NoProfile", "-NonInteractive", "-Command", ps_script],
@@ -445,6 +453,7 @@ def register_start_menu_launcher(
     else:
         desktop_file = menu_dir / f"auraseed-{safe_id}.desktop"
         exec_line = f'"{target}" {arguments}'.strip()
+        icon_line = f"Icon={resolved_icon}\n" if resolved_icon is not None else ""
         desktop_file.write_text(
             "[Desktop Entry]\n"
             "Type=Application\n"
@@ -452,6 +461,7 @@ def register_start_menu_launcher(
             f"Comment={description or label}\n"
             f"Exec={exec_line}\n"
             f"Path={workdir}\n"
+            f"{icon_line}"
             "Terminal=false\n"
             "Categories=Development;Utility;\n",
             encoding="utf-8",
@@ -465,6 +475,7 @@ def register_start_menu_launcher(
         "display_name": label,
         "shortcut_path": str(shortcut_path),
         "menu_dir": str(menu_dir),
+        "icon_path": str(resolved_icon) if resolved_icon is not None else None,
         "cache_refresh": cache_info,
     }
 

@@ -1,0 +1,38 @@
+{
+  "$schema": "https://auragrid.io/schemas/app.manifest.schema.json",
+  "appId": "auraseed",
+  "name": "AuraSeed - Sovereign Runtime & MVenv Manager",
+  "version": "1.1.0",
+  "description": "Zero-privilege Python runtime discovery, capability probing, sovereign virtual environment (mvenv) engine, and Start Menu / launcher lifecycle manager.",
+  "services": [
+    {
+      "masId": "auraseed-api",
+      "displayName": "AuraSeed Runtime & MVenv API",
+      "mode": "LocalOnly",
+      "runtime": "Python",
+      "pythonConfig": {
+        "pythonExecutable": "python",
+        "arguments": "-m auraseed serve --port 8765"
+      }
+    }
+  ],
+  "guiEntryPoints": [
+    {
+      "name": "mvenv-manager",
+      "context": "Python",
+      "entryCommand": "-m auraseed gui",
+      "iconPath": "assets/auraseed.ico",
+      "description": "Launch AuraSeed Sovereign Runtime & MVenv Manager desktop UI"
+    }
+  ],
+  "distribution": {
+    "channels": ["stable"],
+    "artifacts": ["assets/*.ico", "assets/*.png"],
+    "entrypointCommand": "-m auraseed gui",
+    "defaultPort": 8765,
+    "createDesktopShortcut": false,
+    "createLaunchers": true,
+    "tags": ["auraseed", "mvenv", "runtime", "sovereign"]
+  }
+}
+

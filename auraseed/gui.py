@@ -5,6 +5,7 @@ Zero external runtime dependencies (Python standard library only).
 import logging
 import sys
 import threading
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 try:
@@ -327,6 +328,12 @@ class AuraSeedMvenvGUI:
         self.root.title("AuraSeed - Sovereign MVenv Manager")
         self.root.geometry("920x600")
         self.root.minsize(720, 460)
+        try:
+            ico_path = Path(__file__).resolve().parent / "assets" / "auraseed.ico"
+            if ico_path.exists():
+                self.root.iconbitmap(str(ico_path))
+        except Exception as exc:
+            _LOG.debug("Window iconbitmap skipped: %s", exc)
 
         self.style = ttk.Style(self.root)
         try:
