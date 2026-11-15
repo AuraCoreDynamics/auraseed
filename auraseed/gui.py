@@ -12,8 +12,14 @@ try:
     import tkinter as tk
     from tkinter import messagebox, simpledialog, ttk
     HAS_TK = True
-except ImportError:
+except (ImportError, ModuleNotFoundError):
     HAS_TK = False
+    tk = None
+    messagebox = None
+    simpledialog = None
+    ttk = None
+
+_FrameBase = ttk.Frame if HAS_TK and ttk is not None else object
 
 from auraseed.mvenv.manager import MvenvManager
 from auraseed.mvenv.models import MvenvCreateRequest
@@ -21,7 +27,7 @@ from auraseed.mvenv.models import MvenvCreateRequest
 _LOG = logging.getLogger(__name__)
 
 
-class MvenvManagerPanel(ttk.Frame):
+class MvenvManagerPanel(_FrameBase):
     """
     Reusable Tkinter panel for inspecting, creating, verifying, deleting,
     and merging AuraSeed Managed Virtual Environments (mvenvs).
