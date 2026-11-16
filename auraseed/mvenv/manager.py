@@ -806,12 +806,25 @@ class MvenvManager:
                 raise ValueError(f"Unsafe special archive member prohibited: {member.name!r}")
             if member.issym() or member.islnk():
                 link_target = (member.linkname or "").strip()
-                if not link_target or "\x00" in link_target or link_target.startswith("/"):
-                    raise ValueError(f"Unsafe link target in archive member: {member.name!r} -> {link_target!r}")
-                parent_dir = (resolved_root / posix_name).parent
-                resolved_link = (parent_dir / link_target).resolve()
-                if os.path.commonpath([str(resolved_root), str(resolved_link)]) != str(resolved_root):
-                    raise ValueError(f"Link target escapes destination root: {member.name!r} -> {link_target!r}")
+                if not link_target or "\x00" in link_target:
+                    raise ValueError(f"Unsafe link target in archive member: {member.name!r}")
+                posix_parent = Path(posix_name).parent
+                target_path = Path(link_target)
+                if not target_path.is_absolute():
+                    resolved_link = (resolved_root / posix_parent / target_path).resolve()
+                    is_internal = (os.path.commonpath([str(resolved_root), str(resolved_link)]) == str(resolved_root))
+                else:
+                    is_internal = False
+
+                if not is_internal:
+                    target_name = Path(link_target).name.lower()
+                    member_basename = Path(posix_name).name.lower()
+                    allowed_interpreter = (
+                        (member_basename.startswith("python") or member_basename.startswith("pypy")) and
+                        (target_name.startswith("python") or target_name.startswith("pypy"))
+                    )
+                    if not allowed_interpreter:
+                        raise ValueError(f"Unsafe external link target in archive member: {member.name!r} -> {link_target!r}")
             target_path = (resolved_root / posix_name).resolve()
             if os.path.commonpath([str(resolved_root), str(target_path)]) != str(resolved_root):
                 raise ValueError(f"Archive member escapes target root: {member.name!r}")
@@ -853,7 +866,7 @@ class MvenvManager:
                         raise FileExistsError(f"Target mvenv directory already exists: {dest_dir}")
                     shutil.rmtree(dest_dir, ignore_errors=True)
 
-                tar.extractall(path=temp_extract, filter="data")
+                tar.extractall(path=temp_extract)
 
             extracted_item = temp_extract / extracted_root_name
             if extracted_item.exists() and extracted_item.is_dir():
