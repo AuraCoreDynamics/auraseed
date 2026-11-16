@@ -4,6 +4,8 @@
   "name": "AuraSeed - Sovereign Runtime & MVenv Manager",
   "version": "1.1.1",
   "description": "Zero-privilege Python runtime discovery, capability probing, sovereign virtual environment (mvenv) engine, and Start Menu / launcher lifecycle manager.",
+  "websiteUrl": "https://auracoredynamics.com/auraseed/",
+  "repositoryUrl": "https://github.com/AuraCoreDynamics/auraseed.git",
   "services": [
     {
       "masId": "auraseed-api",
