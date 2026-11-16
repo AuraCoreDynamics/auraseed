@@ -9,8 +9,11 @@ from pathlib import Path
 
 try:
     import tkinter as tk
+    _probe = tk.Tk()
+    _probe.withdraw()
+    _probe.destroy()
     HAS_TK = True
-except ImportError:
+except Exception:
     HAS_TK = False
 
 from auraseed.gui import AuraSeedMvenvGUI, MvenvManagerPanel

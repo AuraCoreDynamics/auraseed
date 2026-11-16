@@ -802,8 +802,16 @@ class MvenvManager:
             parts = [part for part in posix_name.split("/") if part and part != "."]
             if ".." in parts:
                 raise ValueError(f"Archive path traversal detected: {member.name!r}")
-            if member.issym() or member.islnk() or member.isdev() or member.isfifo():
-                raise ValueError(f"Unsafe special/link archive member prohibited: {member.name!r}")
+            if member.isdev() or member.isfifo():
+                raise ValueError(f"Unsafe special archive member prohibited: {member.name!r}")
+            if member.issym() or member.islnk():
+                link_target = (member.linkname or "").strip()
+                if not link_target or "\x00" in link_target or link_target.startswith("/"):
+                    raise ValueError(f"Unsafe link target in archive member: {member.name!r} -> {link_target!r}")
+                parent_dir = (resolved_root / posix_name).parent
+                resolved_link = (parent_dir / link_target).resolve()
+                if os.path.commonpath([str(resolved_root), str(resolved_link)]) != str(resolved_root):
+                    raise ValueError(f"Link target escapes destination root: {member.name!r} -> {link_target!r}")
             target_path = (resolved_root / posix_name).resolve()
             if os.path.commonpath([str(resolved_root), str(target_path)]) != str(resolved_root):
                 raise ValueError(f"Archive member escapes target root: {member.name!r}")

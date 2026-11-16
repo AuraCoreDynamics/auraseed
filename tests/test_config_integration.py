@@ -2,7 +2,11 @@ import tempfile
 import os
 import unittest
 from pathlib import Path
-from auraseed.provision.config_manager import apply_user_configs
+from auraseed.provision.config_manager import (
+    apply_user_configs,
+    get_conda_config_path,
+    get_pip_config_path,
+)
 
 class TestConfigIntegration(unittest.TestCase):
     def test_apply_and_backup(self):
@@ -14,9 +18,13 @@ class TestConfigIntegration(unittest.TestCase):
 
             orig_appdata = os.environ.get("APPDATA")
             orig_userprofile = os.environ.get("USERPROFILE")
+            orig_home = os.environ.get("HOME")
+            orig_xdg = os.environ.get("XDG_CONFIG_HOME")
             try:
                 os.environ["APPDATA"] = str(appdata)
                 os.environ["USERPROFILE"] = str(userprofile)
+                os.environ["HOME"] = str(userprofile)
+                os.environ["XDG_CONFIG_HOME"] = str(appdata)
 
                 test_cfg = Path(td) / "test_bootstrap.json"
                 test_cfg.write_text(
@@ -41,8 +49,8 @@ class TestConfigIntegration(unittest.TestCase):
                 # 1. First run: create files
                 res1 = apply_user_configs(test_cfg, auto_yes=True)
                 self.assertTrue(res1["pip"]["created"])
-                pip_file = appdata / "pip" / "pip.ini"
-                condarc = Path.home() / ".condarc"  # Path.home() uses USERPROFILE on Windows
+                pip_file = get_pip_config_path()
+                condarc = get_conda_config_path()
 
                 self.assertTrue(pip_file.exists())
                 self.assertTrue(condarc.exists())
@@ -57,10 +65,22 @@ class TestConfigIntegration(unittest.TestCase):
                 self.assertTrue(backup_pip.exists())
                 self.assertIn(".bak_", backup_pip.name)
             finally:
-                if orig_appdata:
+                if orig_appdata is not None:
                     os.environ["APPDATA"] = orig_appdata
-                if orig_userprofile:
+                else:
+                    os.environ.pop("APPDATA", None)
+                if orig_userprofile is not None:
                     os.environ["USERPROFILE"] = orig_userprofile
+                else:
+                    os.environ.pop("USERPROFILE", None)
+                if orig_home is not None:
+                    os.environ["HOME"] = orig_home
+                else:
+                    os.environ.pop("HOME", None)
+                if orig_xdg is not None:
+                    os.environ["XDG_CONFIG_HOME"] = orig_xdg
+                else:
+                    os.environ.pop("XDG_CONFIG_HOME", None)
 
 if __name__ == "__main__":
     unittest.main()

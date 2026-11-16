@@ -8,6 +8,9 @@ import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from auraseed.mvenv.manager import MvenvManager
+from auraseed.mvenv.models import MvenvCreateRequest
+
 try:
     import tkinter as tk
     from tkinter import messagebox, simpledialog, ttk
@@ -20,10 +23,6 @@ except (ImportError, ModuleNotFoundError):
     ttk = None
 
 _FrameBase = ttk.Frame if HAS_TK and ttk is not None else object
-
-from auraseed.mvenv.manager import MvenvManager
-from auraseed.mvenv.models import MvenvCreateRequest
-
 _LOG = logging.getLogger(__name__)
 
 

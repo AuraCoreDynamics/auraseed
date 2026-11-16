@@ -259,6 +259,29 @@ class QgisDiscoverer(BaseDiscoverer):
         )
 
     def _discover_linux(self, seen_roots: Set[str]) -> Iterator[DiscoveredEnvironment]:
+        for p in self.search_paths:
+            if not p.exists():
+                continue
+            py_candidates = [
+                p / "bin" / "python3",
+                p / "bin" / "python",
+                p / "python.exe",
+            ]
+            for sub in p.glob("apps/Python*"):
+                py_candidates.extend([sub / "python.exe", sub / "bin" / "python", sub / "bin" / "python3", sub / "python"])
+            for py_cand in py_candidates:
+                if py_cand.exists() and str(py_cand) not in seen_roots:
+                    seen_roots.add(str(py_cand))
+                    yield DiscoveredEnvironment(
+                        id=str(py_cand.resolve()),
+                        name=f"QGIS ({p.name})",
+                        executable=py_cand.resolve(),
+                        version="3.x",
+                        source_type=self.source_type,
+                        site_packages=[],
+                        metadata={"target_modules": ["qgis", "PyQt5"]}
+                    )
+
         qgis_bin = Path("/usr/bin/qgis")
         if qgis_bin.exists():
             py_bin = Path("/usr/bin/python3")

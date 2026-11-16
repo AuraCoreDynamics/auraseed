@@ -10,6 +10,7 @@ from auraseed.seed.isolation import HostIsolationEngine
 from auraseed.seed.artifacts import write_seed_manifest, generate_launchers
 from auraseed.models import SeedManifest
 
+@unittest.skipUnless(sys.platform == "win32", "ArcGIS Pro integration test requires Windows")
 class TestArcProIntegrationAndSovereignty(unittest.TestCase):
     def setUp(self):
         self.temp_root = Path("C:/temp")

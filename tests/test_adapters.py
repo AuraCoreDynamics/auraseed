@@ -48,8 +48,13 @@ class TestDiscoveryAdapters(unittest.TestCase):
         self.assertNotEqual(py_env.version, "unknown")
 
     def test_discovery_manager_aggregation(self):
+        import sys
         manager = DiscoveryManager()
-        manager.register_strategy(WindowsDiscoverer())
+        if sys.platform == "win32":
+            manager.register_strategy(WindowsDiscoverer())
+        else:
+            from auraseed.discovery.os.linux import LinuxDiscoverer
+            manager.register_strategy(LinuxDiscoverer())
         manager.register_strategy(QgisDiscoverer())
         envs = manager.run_discovery()
         self.assertGreater(len(envs), 0)

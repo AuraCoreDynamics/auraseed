@@ -223,6 +223,35 @@ class ArcProDiscoverer(BaseDiscoverer):
         )
 
     def _discover_posix(self, seen_roots: Set[str]) -> Iterator[DiscoveredEnvironment]:
+        for p in self.search_paths:
+            if not p.exists():
+                continue
+            env_dirs: List[Path] = []
+            if (p / "bin" / "Python" / "envs").exists():
+                env_dirs.extend([c for c in (p / "bin" / "Python" / "envs").iterdir() if c.is_dir()])
+            elif (p / "conda" / "envs").exists():
+                env_dirs.extend([c for c in (p / "conda" / "envs").iterdir() if c.is_dir()])
+            elif (p / "python.exe").exists() or (p / "bin" / "python").exists():
+                env_dirs.append(p)
+            for env_dir in env_dirs:
+                py_exe = (
+                    env_dir / "python.exe"
+                    if (env_dir / "python.exe").exists()
+                    else (env_dir / "bin" / "python")
+                )
+                if py_exe.exists() and str(py_exe) not in seen_roots:
+                    seen_roots.add(str(py_exe))
+                    is_conda = (env_dir / "conda-meta").exists()
+                    yield DiscoveredEnvironment(
+                        id=str(py_exe.resolve()),
+                        name=f"ArcGIS Pro ({env_dir.name})",
+                        executable=py_exe.resolve(),
+                        version="3.x",
+                        source_type=self.source_type,
+                        site_packages=[],
+                        metadata={"is_conda": is_conda, "target_modules": ["arcgis", "arcpy"]},
+                    )
+
         # ArcGIS Pro is Windows-native, but Conda environments with arcgis API can exist on Posix
         conda_envs = Path.home() / ".conda" / "envs"
         if conda_envs.exists():
