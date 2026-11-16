@@ -30,6 +30,7 @@
   "distribution": {
     "channels": ["stable"],
     "artifacts": ["assets/*.ico", "assets/*.png"],
+    "skills": ["skills/auraseed-mvenv"],
     "entrypointCommand": "-m auraseed gui",
     "defaultPort": 8765,
     "createDesktopShortcut": false,
