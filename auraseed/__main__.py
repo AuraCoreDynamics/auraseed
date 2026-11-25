@@ -326,6 +326,15 @@ def handle_mvenv_cli(args: List[str]) -> int:
     p_verify.add_argument("--root", type=str, help="Custom mvenv root directory")
     p_verify.add_argument("--json", action="store_true", help="Output as JSON")
 
+    # provenance
+    p_provenance = subparsers.add_parser(
+        "provenance",
+        help="Inspect deterministic cryptographic provenance and installed SBOM packages for an mvenv",
+    )
+    p_provenance.add_argument("name", help="Name or path of the mvenv")
+    p_provenance.add_argument("--root", type=str, help="Custom mvenv root directory")
+    p_provenance.add_argument("--json", action="store_true", help="Output as JSON")
+
     # export
     p_export = subparsers.add_parser("export", help="Export an mvenv as a portable tar.gz bundle")
     p_export.add_argument("name", help="Name of the mvenv")
@@ -533,6 +542,26 @@ def handle_mvenv_cli(args: List[str]) -> int:
             else:
                 print(f"[FAIL] Mvenv '{parsed.name}' failed verification: {res.get('error')}", file=sys.stderr)
         return 0 if res.get("valid") else 1
+
+    if parsed.mvenv_cmd == "provenance":
+        try:
+            prov = mgr.get_mvenv_provenance(parsed.name)
+        except (KeyError, ValueError) as e:
+            print(f"Error resolving mvenv provenance: {e}", file=sys.stderr)
+            return 1
+        if getattr(parsed, "json", False):
+            print(json.dumps(prov, indent=2))
+        else:
+            print(f"Provenance for '{prov['mvenv_name']}' ({prov['mvenv_path']}):")
+            print(f"  Digest:         {prov['provenance_digest']}")
+            print(f"  Python:         {prov['python_path']} ({prov['python_version']})")
+            print(f"  Sovereign:      {prov['sovereign']}")
+            print(f"  Generated At:   {prov['generated_at']}")
+            print(f"  Packages ({prov['package_count']}):")
+            for pkg in prov.get("packages", []):
+                edit_tag = " (editable)" if pkg.get("editable") else ""
+                print(f"    - {pkg['name']}=={pkg['version']}{edit_tag}")
+        return 0
 
     if parsed.mvenv_cmd == "export":
         try:

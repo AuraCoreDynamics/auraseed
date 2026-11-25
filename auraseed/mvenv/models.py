@@ -93,3 +93,46 @@ class MvenvBundleMetadata:
             is_sovereign=bool(data.get("is_sovereign") if "is_sovereign" in data else data.get("isSovereign", True)),
             metadata=dict(data.get("metadata", {}))
         )
+
+
+@dataclass
+class MvenvProvenance:
+    """
+    Deterministic cryptographic provenance and lightweight SBOM record for a managed virtual environment.
+    """
+    mvenv_name: str
+    mvenv_path: str
+    python_path: str
+    python_version: str
+    sovereign: bool
+    package_count: int
+    packages: List[Dict[str, Any]] = field(default_factory=list)
+    provenance_digest: str = ""
+    generated_at: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "MvenvProvenance":
+        pkgs = [
+            {
+                "name": str(p.get("name", "")),
+                "version": str(p.get("version", "")),
+                "editable": bool(p.get("editable", False)),
+            }
+            for p in (data.get("packages") or [])
+            if isinstance(p, dict)
+        ]
+        return cls(
+            mvenv_name=str(data.get("mvenv_name") or data.get("mvenvName") or data.get("name", "")),
+            mvenv_path=str(data.get("mvenv_path") or data.get("mvenvPath") or data.get("path", "")),
+            python_path=str(data.get("python_path") or data.get("pythonPath", "")),
+            python_version=str(data.get("python_version") or data.get("pythonVersion", "")),
+            sovereign=bool(data.get("sovereign") if "sovereign" in data else data.get("is_sovereign", True)),
+            package_count=int(data.get("package_count") if "package_count" in data else len(pkgs)),
+            packages=pkgs,
+            provenance_digest=str(data.get("provenance_digest") or data.get("provenanceDigest", "")),
+            generated_at=str(data.get("generated_at") or data.get("generatedAt", "")),
+        )
+

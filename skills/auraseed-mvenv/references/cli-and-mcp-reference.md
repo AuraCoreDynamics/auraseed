@@ -5,7 +5,7 @@
 AuraSeed separates responsibilities into three cleanly aligned layers:
 
 1. **Python API (`auraseed.mvenv.manager.MvenvManager`, `auraseed.discovery.*`)**:
-   Programmatic runtime discovery (`discover_interpreters`, `discover_venvs`), environment creation/isolation (`create_venv`), inspection (`list_venvs`, `get_venv`, `verify_venv`, `get_activation_info`), execution (`run_in_venv`), package management (`install_packages`, `install_requirements`), consolidation (`merge_venvs`), and P2P bundling (`export_bundle`, `import_bundle`).
+   Programmatic runtime discovery (`discover_interpreters`, `discover_venvs`), environment creation/isolation (`create_venv`), inspection (`list_venvs`, `get_venv`, `verify_venv`, `get_mvenv_provenance`, `get_activation_info`), execution (`run_in_venv`), package management (`install_packages`, `install_requirements`), consolidation (`merge_venvs`), and P2P bundling (`export_bundle`, `import_bundle`).
 2. **CLI (`python -m auraseed ...` / `auraseed.ps1` / `auraseed.bat` / `auraseed.sh`)**:
    Non-interactive `--json` subcommands backed directly by the Python API. Passing `--json` or `--mcp` sets quiet unattended config provisioning (`apply_user_configs(auto_yes=True, quiet=True)`) so stdout remains strict JSON or JSON-RPC.
 3. **MCP Server (`auraseed.api.mcp.AuraSeedMcpServer`)**:
@@ -39,6 +39,7 @@ Valid `--adapter` values: `all`, `windows_registry`, `linux_system`, `macos_syst
 | :--- | :--- | :--- |
 | `auraseed mvenv info <name>` | `--root`, `--json` | Show path, Python executable, version, size, and installed packages. |
 | `auraseed mvenv verify <name>` | `--root`, `--json` | Run executable health check on `<name>`. |
+| `auraseed mvenv provenance <name>` | `--root`, `--json` | Compute deterministic SHA-256 provenance digest and inspect `.dist-info` SBOM packages. |
 | `auraseed mvenv activate <name>` | `--shell {powershell,cmd,bash,all}`, `--root`, `--json` | Return activation scripts, launcher path, and shell commands. |
 | `auraseed mvenv python <name> -- <args...>` | `--cwd`, `--timeout`, `--root`, `--json` | Run the mvenv's Python interpreter with isolated `VIRTUAL_ENV`/`PATH`. |
 | `auraseed mvenv run <name> -- <cmd...>` | `--cwd`, `--timeout`, `--root`, `--json` | Run an executable or command resolved in the mvenv's `Scripts`/`bin`. |
@@ -64,6 +65,7 @@ Valid `--adapter` values: `all`, `windows_registry`, `linux_system`, `macos_syst
 | `run_in_mvenv` | `auraseed mvenv python <name> --json -- ...` or `auraseed mvenv run <name> --json -- ...` |
 | `install_mvenv_packages` | `auraseed mvenv install <name> ... --json` |
 | `verify_mvenv` | `auraseed mvenv verify <name> --json` |
+| `get_mvenv_provenance` | `auraseed mvenv provenance <name> --json` |
 | `merge_mvenvs` | `auraseed mvenv merge <src...> --target <t> --json` |
 | `delete_mvenv` | `auraseed mvenv delete <name> --json` |
 

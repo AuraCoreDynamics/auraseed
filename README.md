@@ -48,10 +48,11 @@ python -m auraseed mvenv list --json
 python -m auraseed mvenv create data-science --packages numpy pandas
 python -m auraseed mvenv create py312-env --spec ">=3.11" --adapter all --json
 
-# Inspect mvenv details, activation commands, and verification
+# Inspect mvenv details, activation commands, verification, and cryptographic provenance
 python -m auraseed mvenv info data-science --json
 python -m auraseed mvenv activate data-science --json
 python -m auraseed mvenv verify data-science --json
+python -m auraseed mvenv provenance data-science --json
 
 # Execute Python or arbitrary commands isolated inside an mvenv
 python -m auraseed mvenv python data-science --json -- -c "import sys; print(sys.executable)"

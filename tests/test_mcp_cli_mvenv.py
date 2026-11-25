@@ -10,15 +10,17 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.request
 from pathlib import Path
+from typing import Optional
 from unittest import mock
 
 from auraseed.api.mcp import AuraSeedMcpServer
 from auraseed.api.server import create_api_server
 from auraseed.mvenv.manager import MvenvManager
-from auraseed.mvenv.models import MvenvCreateRequest
+from auraseed.mvenv.models import MvenvCreateRequest, MvenvProvenance
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -218,6 +220,7 @@ class TestMvenvPythonCliMcp(unittest.TestCase):
         self.assertIn("create_mvenv", tool_names)
         self.assertIn("run_in_mvenv", tool_names)
         self.assertIn("get_mvenv_activation", tool_names)
+        self.assertIn("get_mvenv_provenance", tool_names)
         self.assertEqual(called_clis[0][0], "discover")
         self.assertFalse(responses[3]["result"]["isError"])
         disc_payload = json.loads(responses[3]["result"]["content"][0]["text"])
@@ -367,6 +370,167 @@ class TestMvenvPythonCliMcp(unittest.TestCase):
         self.assertIn("mvenv run", content)
         self.assertIn("mvenv python", content)
         self.assertIn("./references/cli-and-mcp-reference.md", content)
+
+    # ------------------------------------------------------------------
+    # 5. Deterministic cryptographic provenance & SBOM inspection tests
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _write_dist_info(
+        site_packages_dir: Path,
+        dist_dir_name: str,
+        name: str,
+        version: str,
+        editable: Optional[bool] = None,
+    ) -> Path:
+        site_packages_dir.mkdir(parents=True, exist_ok=True)
+        dist_dir = site_packages_dir / f"{dist_dir_name}.dist-info"
+        dist_dir.mkdir(parents=True, exist_ok=True)
+        metadata_text = (
+            "Metadata-Version: 2.1\n"
+            f"Name: {name}\n"
+            f"Version: {version}\n"
+            "Summary: Synthetic test distribution\n\n"
+            "Body text with Name: IgnoredBodyHeader\n"
+        )
+        (dist_dir / "METADATA").write_text(metadata_text, encoding="utf-8")
+        if editable is not None:
+            direct_payload = {
+                "url": f"file:///workspace/{name}",
+                "dir_info": {"editable": bool(editable)},
+            }
+            (dist_dir / "direct_url.json").write_text(json.dumps(direct_payload), encoding="utf-8")
+        return dist_dir
+
+    def test_mvenv_provenance_python_cli_and_mcp(self):
+        # Missing or blank mvenv raises KeyError / ValueError
+        with self.assertRaises(ValueError):
+            self.manager.get_mvenv_provenance("   ")
+        with self.assertRaises(KeyError):
+            self.manager.get_mvenv_provenance("nonexistent-mvenv-xyz")
+
+        # Create two separate mvenvs with identical python_version, sovereign flag, and packages
+        rec_a = self.manager.create_venv(
+            MvenvCreateRequest(
+                name="prov-alpha",
+                base_python=sys.executable,
+                sovereign=False,
+                force=True,
+            )
+        )
+        rec_b = self.manager.create_venv(
+            MvenvCreateRequest(
+                name="prov-beta",
+                base_python=sys.executable,
+                sovereign=False,
+                force=True,
+            )
+        )
+
+        sp_a = self.manager._find_venv_site_packages(Path(rec_a.path))[0]
+        sp_b = self.manager._find_venv_site_packages(Path(rec_b.path))[0]
+
+        # Populate packages in different filesystem creation orders
+        self._write_dist_info(sp_a, "zeta_pkg-2.1.0", "zeta-pkg", "2.1.0", editable=False)
+        self._write_dist_info(sp_a, "alpha_core-0.4.2", "alpha-core", "0.4.2", editable=True)
+
+        self._write_dist_info(sp_b, "alpha_core-0.4.2", "alpha-core", "0.4.2", editable=True)
+        self._write_dist_info(sp_b, "zeta_pkg-2.1.0", "zeta-pkg", "2.1.0")
+
+        # Ensure zero subprocesses are spawned and execution is fast
+        with mock.patch("auraseed.mvenv.manager.subprocess.run", side_effect=AssertionError("No subprocess allowed!")):
+            t0 = time.perf_counter()
+            prov_a1 = self.manager.get_mvenv_provenance("prov-alpha")
+            elapsed_ms = (time.perf_counter() - t0) * 1000.0
+            prov_a2 = self.manager.get_mvenv_provenance("prov-alpha")
+            prov_b = self.manager.get_mvenv_provenance("prov-beta")
+
+        self.assertLess(elapsed_ms, 100.0)
+        self.assertEqual(prov_a1["mvenv_name"], "prov-alpha")
+        self.assertEqual(Path(prov_a1["mvenv_path"]).resolve(), Path(rec_a.path).resolve())
+        self.assertEqual(Path(prov_a1["python_path"]).resolve(), Path(rec_a.python_path).resolve())
+        self.assertEqual(prov_a1["python_version"], rec_a.python_version)
+        self.assertFalse(prov_a1["sovereign"])
+        self.assertTrue(prov_a1["provenance_digest"].startswith("sha256:"))
+        self.assertEqual(len(prov_a1["provenance_digest"]), len("sha256:") + 64)
+        self.assertTrue(prov_a1["generated_at"])
+
+        # Model round-trip check
+        typed = MvenvProvenance.from_dict(prov_a1)
+        self.assertEqual(typed.to_dict(), prov_a1)
+
+        # Verify packages detected, sorted deterministically, and editable flag parsed
+        pkg_map = {p["name"]: p for p in prov_a1["packages"]}
+        self.assertIn("alpha-core", pkg_map)
+        self.assertIn("zeta-pkg", pkg_map)
+        self.assertEqual(pkg_map["alpha-core"], {"name": "alpha-core", "version": "0.4.2", "editable": True})
+        self.assertEqual(pkg_map["zeta-pkg"], {"name": "zeta-pkg", "version": "2.1.0", "editable": False})
+        self.assertEqual(prov_a1["package_count"], len(prov_a1["packages"]))
+        pkg_names = [p["name"].lower() for p in prov_a1["packages"]]
+        self.assertEqual(pkg_names, sorted(pkg_names))
+
+        # Deterministic SHA-256 stability across calls & identical sibling environments
+        self.assertEqual(prov_a1["provenance_digest"], prov_a2["provenance_digest"])
+        self.assertEqual(prov_a1["provenance_digest"], prov_b["provenance_digest"])
+
+        # Mutating package version changes digest deterministically
+        self._write_dist_info(sp_b, "extra_lib-1.0.0", "extra-lib", "1.0.0", editable=False)
+        prov_b_mutated = self.manager.get_mvenv_provenance("prov-beta")
+        self.assertNotEqual(prov_a1["provenance_digest"], prov_b_mutated["provenance_digest"])
+
+        # CLI --json output and human-readable summary
+        proc_cli_json = self._run_cli("mvenv", "provenance", "prov-alpha", "--root", str(self.mvenv_root), "--json")
+        self.assertEqual(proc_cli_json.returncode, 0, proc_cli_json.stderr)
+        cli_prov = json.loads(proc_cli_json.stdout)
+        self.assertEqual(cli_prov["provenance_digest"], prov_a1["provenance_digest"])
+        self.assertEqual(cli_prov["package_count"], prov_a1["package_count"])
+
+        proc_cli_txt = self._run_cli("mvenv", "provenance", "prov-alpha", "--root", str(self.mvenv_root))
+        self.assertEqual(proc_cli_txt.returncode, 0, proc_cli_txt.stderr)
+        self.assertIn(prov_a1["provenance_digest"], proc_cli_txt.stdout)
+        self.assertIn("alpha-core==0.4.2 (editable)", proc_cli_txt.stdout)
+
+        proc_cli_missing = self._run_cli("mvenv", "provenance", "missing-env", "--root", str(self.mvenv_root), "--json")
+        self.assertNotEqual(proc_cli_missing.returncode, 0)
+
+        # MCP tools/call delegation (MCP -> CLI -> Python)
+        srv = AuraSeedMcpServer(self.manager)
+        called_clis = []
+        orig_run = srv._run_cli
+
+        def spy_cli(cli_args, timeout=300):
+            called_clis.append(list(cli_args))
+            return orig_run(cli_args, timeout=timeout)
+
+        with mock.patch.object(srv, "_run_cli", side_effect=spy_cli):
+            mcp_resp = srv.handle_message({
+                "jsonrpc": "2.0",
+                "id": 99,
+                "method": "tools/call",
+                "params": {
+                    "name": "get_mvenv_provenance",
+                    "arguments": {"name": "prov-alpha"},
+                },
+            })
+
+        self.assertIsNotNone(mcp_resp)
+        self.assertFalse(mcp_resp["result"]["isError"], mcp_resp)
+        self.assertEqual(called_clis[0][:3], ["mvenv", "provenance", "prov-alpha"])
+        self.assertIn("--json", called_clis[0])
+        mcp_prov = json.loads(mcp_resp["result"]["content"][0]["text"])
+        self.assertEqual(mcp_prov["provenance_digest"], prov_a1["provenance_digest"])
+        self.assertEqual(mcp_prov["packages"], prov_a1["packages"])
+
+        # Missing mvenv via MCP returns isError=True
+        mcp_err = srv.handle_message({
+            "jsonrpc": "2.0",
+            "id": 100,
+            "method": "tools/call",
+            "params": {
+                "name": "get_mvenv_provenance",
+                "arguments": {"name": "does-not-exist"},
+            },
+        })
+        self.assertTrue(mcp_err["result"]["isError"])
 
 
 if __name__ == "__main__":

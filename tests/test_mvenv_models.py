@@ -1,5 +1,5 @@
 import unittest
-from auraseed.mvenv.models import MvenvRecord, MvenvBundleMetadata
+from auraseed.mvenv.models import MvenvRecord, MvenvBundleMetadata, MvenvProvenance
 
 
 class TestMvenvModels(unittest.TestCase):
@@ -70,6 +70,31 @@ class TestMvenvModels(unittest.TestCase):
         restored = MvenvBundleMetadata.from_dict(d)
         self.assertEqual(restored.bundle_id, "b12345")
         self.assertEqual(restored.platform, "linux")
+
+    def test_provenance_model_serialization(self):
+        prov = MvenvProvenance(
+            mvenv_name="prov-env",
+            mvenv_path="/tmp/prov-env",
+            python_path="/tmp/prov-env/bin/python",
+            python_version="3.12.3",
+            sovereign=True,
+            package_count=2,
+            packages=[
+                {"name": "auraseed", "version": "1.1.1", "editable": True},
+                {"name": "requests", "version": "2.32.0", "editable": False},
+            ],
+            provenance_digest="sha256:" + ("a" * 64),
+            generated_at="2026-11-24T12:00:00+00:00",
+        )
+        d = prov.to_dict()
+        self.assertEqual(d["mvenv_name"], "prov-env")
+        self.assertEqual(d["package_count"], 2)
+        self.assertTrue(d["packages"][0]["editable"])
+
+        restored = MvenvProvenance.from_dict(d)
+        self.assertEqual(restored.mvenv_name, "prov-env")
+        self.assertEqual(restored.provenance_digest, "sha256:" + ("a" * 64))
+        self.assertEqual(len(restored.packages), 2)
 
 
 if __name__ == "__main__":

@@ -25,7 +25,7 @@ from auraseed.seed.sovereign import SovereignVenvEngine
 from auraseed.seed.isolation import HostIsolationEngine
 from auraseed.seed.artifacts import generate_launchers
 from auraseed.registry.manager import RegistryManager
-from auraseed.mvenv.models import MvenvRecord, MvenvCreateRequest, MvenvBundleMetadata
+from auraseed.mvenv.models import MvenvRecord, MvenvCreateRequest, MvenvBundleMetadata, MvenvProvenance
 from auraseed.mvenv.catalog import MvenvCatalog
 
 _LOG = logging.getLogger(__name__)
@@ -932,6 +932,214 @@ class MvenvManager:
             }
         except Exception as e:
             return {"valid": False, "error": str(e)}
+
+    @staticmethod
+    def _find_venv_site_packages(venv_dir: Path) -> List[Path]:
+        """
+        Locates site-packages directories inside a managed virtual environment
+        across Windows and POSIX layouts without invoking any subprocess.
+        """
+        candidates: List[Path] = [venv_dir / "Lib" / "site-packages"]
+        lib_dir = venv_dir / "lib"
+        if lib_dir.is_dir():
+            try:
+                for entry in sorted(lib_dir.iterdir(), key=lambda p: p.name):
+                    if entry.is_dir() and entry.name.lower().startswith("python"):
+                        candidates.append(entry / "site-packages")
+            except OSError:
+                pass
+            candidates.append(lib_dir / "site-packages")
+
+        resolved_dirs: List[Path] = []
+        seen: set[str] = set()
+        for cand in candidates:
+            if cand.is_dir():
+                norm_key = os.path.normcase(os.path.realpath(str(cand)))
+                if norm_key not in seen:
+                    seen.add(norm_key)
+                    resolved_dirs.append(cand)
+        return resolved_dirs
+
+    @staticmethod
+    def _read_pyvenv_cfg_version(venv_dir: Path) -> Optional[str]:
+        cfg_file = venv_dir / "pyvenv.cfg"
+        if not cfg_file.is_file():
+            return None
+        try:
+            for raw_line in cfg_file.read_text(encoding="utf-8", errors="replace").splitlines():
+                if "=" not in raw_line:
+                    continue
+                key, val = raw_line.split("=", 1)
+                norm_key = key.strip().lower()
+                norm_val = val.strip()
+                if norm_key == "version" and norm_val:
+                    return norm_val
+                if norm_key == "version_info" and norm_val:
+                    parts = norm_val.split(".")
+                    if len(parts) >= 3:
+                        return f"{parts[0]}.{parts[1]}.{parts[2]}"
+                    return norm_val
+        except OSError:
+            pass
+        return None
+
+    @staticmethod
+    def _parse_dist_info_dir(dist_info_dir: Path) -> Optional[Dict[str, Any]]:
+        """
+        Parses Core Metadata (`METADATA`) and PEP 610 (`direct_url.json`) inside a
+        `.dist-info` directory using pure Python stdlib I/O (zero subprocesses).
+        """
+        pkg_name: Optional[str] = None
+        pkg_version: Optional[str] = None
+
+        metadata_file = dist_info_dir / "METADATA"
+        if metadata_file.is_file():
+            try:
+                with open(metadata_file, "r", encoding="utf-8", errors="replace") as fh:
+                    for raw_line in fh:
+                        line = raw_line.rstrip("\r\n")
+                        if line == "":
+                            break
+                        if line[0] in (" ", "\t"):
+                            continue
+                        if ":" not in line:
+                            continue
+                        header, value = line.split(":", 1)
+                        h_lower = header.strip().lower()
+                        if h_lower == "name" and pkg_name is None:
+                            pkg_name = value.strip()
+                        elif h_lower == "version" and pkg_version is None:
+                            pkg_version = value.strip()
+                        if pkg_name is not None and pkg_version is not None:
+                            break
+            except OSError:
+                pass
+
+        if not pkg_name:
+            stem = dist_info_dir.name
+            if stem.endswith(".dist-info"):
+                stem = stem[: -len(".dist-info")]
+            if "-" in stem:
+                fallback_name, fallback_ver = stem.split("-", 1)
+                pkg_name = pkg_name or fallback_name.strip()
+                pkg_version = pkg_version or fallback_ver.strip()
+            elif stem.strip():
+                pkg_name = stem.strip()
+
+        if not pkg_name:
+            return None
+
+        editable = False
+        direct_url_file = dist_info_dir / "direct_url.json"
+        if direct_url_file.is_file():
+            try:
+                direct_data = json.loads(direct_url_file.read_text(encoding="utf-8", errors="replace"))
+                if isinstance(direct_data, dict):
+                    dir_info = direct_data.get("dir_info")
+                    if isinstance(dir_info, dict) and bool(dir_info.get("editable", False)):
+                        editable = True
+                    elif bool(direct_data.get("editable", False)):
+                        editable = True
+            except Exception:
+                editable = False
+
+        return {
+            "name": pkg_name,
+            "version": pkg_version or "0.0.0",
+            "editable": editable,
+        }
+
+    @staticmethod
+    def _compute_provenance_digest(
+        python_version: str,
+        sovereign: bool,
+        packages: List[Dict[str, Any]],
+    ) -> str:
+        canonical_payload = {
+            "packages": [
+                {
+                    "editable": bool(p["editable"]),
+                    "name": str(p["name"]),
+                    "version": str(p["version"]),
+                }
+                for p in packages
+            ],
+            "python_version": str(python_version),
+            "sovereign": bool(sovereign),
+        }
+        canonical_json = json.dumps(
+            canonical_payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("utf-8")
+        return f"sha256:{hashlib.sha256(canonical_json).hexdigest()}"
+
+    def get_mvenv_provenance(self, name: str) -> Dict[str, Any]:
+        """
+        Inspects an mvenv's site-packages `.dist-info` directories directly in Python
+        (zero subprocesses, offline-capable) and computes a deterministic SHA-256
+        cryptographic provenance digest over `{python_version, sovereign, packages}`.
+        """
+        if not name or not str(name).strip():
+            raise ValueError("Managed venv name must not be empty.")
+
+        rec = self._resolve_mvenv(str(name).strip())
+        venv_dir = Path(rec.path)
+        if not venv_dir.exists() or not venv_dir.is_dir():
+            raise KeyError(f"Managed venv directory for '{name}' not found at '{venv_dir}'.")
+
+        py_exe = Path(rec.python_path) if rec.python_path else MvenvCatalog._find_python_exe(venv_dir)
+        py_version = (rec.python_version or "").strip()
+        if not py_version or py_version.lower() == "unknown":
+            py_version = self._read_pyvenv_cfg_version(venv_dir) or "unknown"
+
+        discovered_pkgs: List[Dict[str, Any]] = []
+        seen_pkgs: set[tuple[str, str, bool]] = set()
+
+        for sp_dir in self._find_venv_site_packages(venv_dir):
+            try:
+                with os.scandir(sp_dir) as it:
+                    entries = [e for e in it if e.is_dir() and e.name.endswith(".dist-info")]
+            except OSError:
+                continue
+
+            for entry in entries:
+                parsed_pkg = self._parse_dist_info_dir(Path(entry.path))
+                if not parsed_pkg:
+                    continue
+                dedup_key = (
+                    parsed_pkg["name"].lower(),
+                    parsed_pkg["version"],
+                    bool(parsed_pkg["editable"]),
+                )
+                if dedup_key not in seen_pkgs:
+                    seen_pkgs.add(dedup_key)
+                    discovered_pkgs.append(parsed_pkg)
+
+        sorted_packages = sorted(
+            discovered_pkgs,
+            key=lambda p: (p["name"].lower(), p["name"], p["version"], bool(p["editable"])),
+        )
+        sovereign = bool(rec.is_sovereign)
+        digest = self._compute_provenance_digest(
+            python_version=py_version,
+            sovereign=sovereign,
+            packages=sorted_packages,
+        )
+
+        prov = MvenvProvenance(
+            mvenv_name=rec.name,
+            mvenv_path=str(venv_dir),
+            python_path=str(py_exe) if py_exe else "",
+            python_version=py_version,
+            sovereign=sovereign,
+            package_count=len(sorted_packages),
+            packages=sorted_packages,
+            provenance_digest=digest,
+            generated_at=datetime.now(timezone.utc).isoformat(),
+        )
+        return prov.to_dict()
 
     @staticmethod
     def _run_pip_install(python_exe: Path, pip_exe: Optional[Path], packages: List[str], upgrade: bool = False):

@@ -105,7 +105,12 @@ After creating or modifying an `mvenv`, verify its executable health and prefix 
    python -m auraseed mvenv verify <name> --json
    ```
    Confirm `"valid": true` in the JSON output.
-2. Confirm execution resolves inside the `mvenv` directory:
+2. Inspect deterministic cryptographic provenance & installed SBOM metadata:
+   ```bash
+   python -m auraseed mvenv provenance <name> --json
+   ```
+   Confirm `"provenance_digest"` (`sha256:...`) and expected `"packages"`.
+3. Confirm execution resolves inside the `mvenv` directory:
    ```bash
    python -m auraseed mvenv python <name> --json -- -c "import sys; print(sys.prefix)"
    ```

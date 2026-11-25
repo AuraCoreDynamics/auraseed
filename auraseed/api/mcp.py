@@ -211,6 +211,21 @@ class AuraSeedMcpServer:
                 }
             },
             {
+                "name": "get_mvenv_provenance",
+                "description": (
+                    "Compute deterministic SHA-256 cryptographic provenance digest and inspect "
+                    "installed site-packages SBOM metadata (.dist-info) for a managed virtual environment."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "Name or path of the mvenv."},
+                        "root": {"type": "string", "description": "Optional custom mvenv catalog root directory."}
+                    },
+                    "required": ["name"]
+                }
+            },
+            {
                 "name": "merge_mvenvs",
                 "description": "Merge multiple source mvenvs into a single target mvenv to consolidate dependencies and save disk space.",
                 "inputSchema": {
@@ -400,6 +415,15 @@ class AuraSeedMcpServer:
             if not name:
                 raise ValueError("Missing required argument 'name'.")
             cli = ["mvenv", "verify", str(name), "--json"]
+            if root:
+                cli.extend(["--root", str(root)])
+            return cli, timeout
+
+        if tool_name == "get_mvenv_provenance":
+            name = args.get("name")
+            if not name or not str(name).strip():
+                raise ValueError("Missing required argument 'name'.")
+            cli = ["mvenv", "provenance", str(name), "--json"]
             if root:
                 cli.extend(["--root", str(root)])
             return cli, timeout
